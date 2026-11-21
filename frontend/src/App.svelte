@@ -132,17 +132,19 @@
   {/if}
 
   <header class="app-header">
-    <span class="brand-logo" aria-label="Shoplist">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M5.5 9h13l-1.2 8.6a2.8 2.8 0 0 1-2.8 2.4H9.5a2.8 2.8 0 0 1-2.8-2.4L5.5 9Z" />
-        <path d="M9 9 12 3.5 15 9" />
-        <path d="M9.7 12.5v4.6M12 12.5v4.6M14.3 12.5v4.6" />
-      </svg>
-    </span>
-    {#if $userStore}
-      <span class="user">{$userStore.name}</span>
-      <button class="btn-ghost" onclick={signOut}>Sign out</button>
-    {/if}
+    <div class="brand-side">
+      <span class="brand-logo" aria-label="Shoplist">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M5.5 9h13l-1.2 8.6a2.8 2.8 0 0 1-2.8 2.4H9.5a2.8 2.8 0 0 1-2.8-2.4L5.5 9Z" />
+          <path d="M9 9 12 3.5 15 9" />
+          <path d="M9.7 12.5v4.6M12 12.5v4.6M14.3 12.5v4.6" />
+        </svg>
+      </span>
+      {#if $userStore}
+        <span class="user">{$userStore.name}</span>
+      {/if}
+    </div>
+    <button class="btn-ghost" onclick={signOut}>Sign out</button>
   </header>
 
   <AddBar onadd={(name, quantity) => void addItem({ name, quantity })} />
