@@ -10,9 +10,9 @@ Groceries typed on a phone in airplane mode are as safe as groceries typed onlin
 
 The app must be fully usable with zero connectivity: browse, add, check off, delete, complete a trip. Sync is a background best-effort process that retries on reconnect. No feature may require a live connection to function, and the UI never blocks on network calls.
 
-### III. Scope is frozen at one list
+### III. Lists multiply across stores and use cases
 
-This is a replacement for shopping-list apps that died of complexity. Rejected permanently: multiple lists, aisle/category grouping, recipe integration, sharing with people outside the household, reminders, notification systems. The staple auto-re-add (US2) is in scope by explicit decision. Adding anything else requires amending this principle first, in writing.
+**Amended v1.1.0 (2026-11-21), explicit stakeholder decision.** Originally frozen at one list. Still true: no aisles/category grouping, no recipe integration, no sharing beyond the household, no reminders, no notifications. Now in scope: MULTIPLE named lists per household (grocery default plus per-store lists and non-shopping lists like a weekly meal plan), presented through a hamburger menu; each list has its own Trip done, its own staple pool, and its own keep/drop flow; the quick-add suggestion pool stays HOUSEHOLD-GLOBAL and is offered on every list. List management = create + delete only. Adding anything beyond that requires amending this principle again, in writing.
 
 ### IV. Conflict resolution is boring by design
 
@@ -39,4 +39,4 @@ Authentication goes through Pocket ID (OIDC, public client, PKCE). This app neve
 
 This constitution supersedes all other practices in this repo. Amendments require a documented reason, an entry in the version history below, and User A's approval. Complexity beyond a user story's acceptance scenarios must be justified against Principle III.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-21 | **Last Amended**: 2026-11-21
+**Version**: 1.1.0 | **Ratified**: 2026-11-21 | **Last Amended**: 2026-11-21
