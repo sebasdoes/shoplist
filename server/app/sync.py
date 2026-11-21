@@ -18,6 +18,7 @@ from .models import (
     PullResponse,
     PushRequest,
     PushResponse,
+    RejectedMutation,
     UpsertItem,
     _row_to_history,
     _row_to_item,
@@ -391,35 +392,53 @@ def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> Push
     conn.execute("BEGIN IMMEDIATE")
     try:
         db.upsert_user(conn, user.subject, user.name)
-        for mutation in request.mutations:
-            if mutation.op == "upsert_item":
-                assert mutation.item is not None  # enforced by the model validator
-                applied.append(upsert_apply(conn, mutation.item, user))
-            elif mutation.op == "create_list":
-                assert mutation.list is not None
-                applied_lists.append(apply_create_list(conn, mutation.list, user))
-            elif mutation.op == "delete_list":
-                assert mutation.list_id is not None
-                applied_lists.append(apply_delete_list(conn, mutation.list_id, user))
-            elif mutation.op == "reorder_lists":
-                assert mutation.order is not None
-                applied_lists.extend(apply_reorder_lists(conn, mutation.order, user))
-            elif mutation.op == "reorder_items":
-                assert mutation.list_id is not None and mutation.order is not None
-                applied.extend(
-                    apply_reorder_items(conn, mutation.list_id, mutation.order, user)
-                )
-            else:
-                assert mutation.trip is not None
-                from . import trips as trips_mod
+        rejected: list[RejectedMutation] = []
+        for index, mutation in enumerate(request.mutations):
+            # Per-mutation isolation (feature-004 fix): one poison mutation (e.g.
+            # an upsert for a list tombstoned on another device) used to 400 the
+            # WHOLE batch and retry forever. It's reported instead, the rest
+            # applies, and the client drops the entry at `index` + beacons it.
+            try:
+                if mutation.op == "upsert_item":
+                    assert mutation.item is not None  # enforced by the model validator
+                    applied.append(upsert_apply(conn, mutation.item, user))
+                elif mutation.op == "create_list":
+                    assert mutation.list is not None
+                    applied_lists.append(apply_create_list(conn, mutation.list, user))
+                elif mutation.op == "delete_list":
+                    assert mutation.list_id is not None
+                    applied_lists.append(apply_delete_list(conn, mutation.list_id, user))
+                elif mutation.op == "reorder_lists":
+                    assert mutation.order is not None
+                    applied_lists.extend(apply_reorder_lists(conn, mutation.order, user))
+                elif mutation.op == "reorder_items":
+                    assert mutation.list_id is not None and mutation.order is not None
+                    applied.extend(
+                        apply_reorder_items(conn, mutation.list_id, mutation.order, user)
+                    )
+                else:
+                    assert mutation.trip is not None
+                    from . import trips as trips_mod
 
-                trip_response = trips_mod.apply_trip(conn, mutation.trip, user)
+                    trip_response = trips_mod.apply_trip(conn, mutation.trip, user)
+            except SyncError as exc:
+                rejected.append(RejectedMutation(index=index, op=mutation.op, detail=exc.detail))
+                print(
+                    f"[push-rejected] index={index} op={mutation.op} {exc.detail}", flush=True
+                )
+            except Exception as exc:  # noqa: BLE001 — reject + log, never kill the batch
+                rejected.append(
+                    RejectedMutation(index=index, op=mutation.op, detail=f"internal error: {exc}")
+                )
+                print(f"[push-error] index={index} op={mutation.op} {exc!r}", flush=True)
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")
         raise
     return PushResponse(
-        applied=AppliedGroup(items=applied, lists=applied_lists), trip=trip_response
+        applied=AppliedGroup(items=applied, lists=applied_lists),
+        trip=trip_response,
+        rejected=rejected,
     )
 
 

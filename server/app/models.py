@@ -243,9 +243,20 @@ class TripResponse(BaseModel):
     readded: list[Readded] = Field(default_factory=list)
 
 
+class RejectedMutation(BaseModel):
+    """Per-mutation rejection (feature-004 fix): a poison mutation (e.g. an
+    upsert for a since-deleted list) no longer poisons the whole batch. The
+    client drops the entry at `index` and beacons `detail`."""
+
+    index: int
+    op: str
+    detail: str
+
+
 class PushResponse(BaseModel):
     applied: AppliedGroup = Field(default_factory=AppliedGroup)
     trip: TripResponse | None = None
+    rejected: list[RejectedMutation] = Field(default_factory=list)
 
 
 class PullRequest(BaseModel):

@@ -157,9 +157,13 @@ def test_delete_list_cascades_item_tombstones(client, auth):
 def test_delete_last_live_list_409(client, auth):
     headers = auth()
     r = push(client, headers, [delete_list_mut(DEFAULT_LIST)])
-    assert r.status_code == 409
-    assert r.json()["detail"] == "cannot delete the last list"
-    # 409 rolls back: the default list stays live
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "delete_list"
+    assert rejected[0]["detail"] == "cannot delete the last list"
+    # the forbidden delete did NOT happen: the default list stays live
     data = pull(client, headers)
     assert {x["id"]: x for x in data["lists"]}[DEFAULT_LIST]["tombstone"] is False
 
@@ -169,8 +173,15 @@ def test_delete_last_live_list_409_after_second_list_deleted(client, auth):
     make_list(client, headers)
     assert push(client, headers, [delete_list_mut(LIST_A)]).status_code == 200
     r = push(client, headers, [delete_list_mut(DEFAULT_LIST)])
-    assert r.status_code == 409
-    assert r.json()["detail"] == "cannot delete the last list"
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "delete_list"
+    assert rejected[0]["detail"] == "cannot delete the last list"
+    assert {x["id"]: x for x in pull(client, headers)["lists"]}[DEFAULT_LIST][
+        "tombstone"
+    ] is False
 
 
 def test_delete_last_live_list_ok_when_another_is_live(client, auth):
@@ -190,8 +201,14 @@ def test_delete_already_deleted_list_is_noop_success(client, auth):
 
 
 def test_delete_unknown_list_400(client, auth):
-    r = push(client, auth(), [delete_list_mut(str(uuid.uuid4()))])
-    assert r.status_code == 400
+    ghost = str(uuid.uuid4())
+    r = push(client, auth(), [delete_list_mut(ghost)])
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "delete_list"
+    assert rejected[0]["detail"] == f"unknown list: {ghost}"
 
 
 # --- item pushes need a live list ---------------------------------------------
@@ -202,8 +219,15 @@ def test_item_push_unknown_list_400_and_full_rollback(client, auth):
     ghost = str(uuid.uuid4())
     good = str(uuid.uuid4())
     r = push(client, headers, [item_mut(id=good), item_mut(list_id=ghost)])
-    assert r.status_code == 400
-    assert items_by_id(pull(client, headers)) == {}  # whole batch rolled back
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 1
+    assert rejected[0]["op"] == "upsert_item"
+    assert rejected[0]["detail"] == f"unknown list: {ghost}"
+    rows = items_by_id(pull(client, headers))
+    assert good in rows  # the VALID sibling (index 0) applies
+    assert all(x["list_id"] != ghost for x in rows.values())  # poison never created
 
 
 def test_item_push_tombstoned_list_400_and_full_rollback(client, auth):
@@ -214,10 +238,16 @@ def test_item_push_tombstoned_list_400_and_full_rollback(client, auth):
     assert push(client, headers, [delete_list_mut(LIST_A)]).status_code == 200
     good = str(uuid.uuid4())
     r = push(client, headers, [item_mut(id=good), item_mut(list_id=LIST_A, name="weer")])
-    assert r.status_code == 400
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 1
+    assert rejected[0]["op"] == "upsert_item"
+    assert rejected[0]["detail"] == f"list is deleted: {LIST_A}"
     items = items_by_id(pull(client, headers))
-    assert good not in items  # rolled back
-    assert items[item_a]["tombstone"] == 1
+    assert good in items  # the VALID sibling (index 0) applies
+    assert item_a in items and items[item_a]["tombstone"] == 1  # cascade intact
+    assert all(x["name"] != "weer" for x in items.values())  # poison never saved
 
 
 def test_item_without_list_id_422(client, auth):
@@ -272,8 +302,14 @@ def test_trip_cross_list_decision_400_and_rollback(client, auth):
         auth(sub="user-b", name="User B"),
         [trip_mut([{"item_id": item_default, "outcome": "bought"}], list_id=LIST_A)],
     )
-    assert r.status_code == 400  # decision references an item from another list
-    data = pull(client, headers, watermark)  # rollback: nothing changed
+    # per-mutation isolation: 200 + reported at its index, trip never applied
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "trip"
+    assert rejected[0]["detail"] == f"item {item_default} belongs to another list"
+    data = pull(client, headers, watermark)  # the forbidden effects never happened
     assert data["items"] == []
     assert client.get("/api/v1/history", headers=headers).json() == []
 
@@ -318,14 +354,25 @@ def test_trip_without_list_id_422(client, auth):
 
 def test_trip_on_unknown_or_deleted_list_400(client, auth):
     headers = auth()
-    r = push(client, headers, [trip_mut([], list_id=str(uuid.uuid4()))])
-    assert r.status_code == 400
+    ghost = str(uuid.uuid4())
+    r = push(client, headers, [trip_mut([], list_id=ghost)])
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "trip"
+    assert rejected[0]["detail"] == f"unknown list: {ghost}"
     make_list(client, headers)
     item_a = str(uuid.uuid4())
     push(client, headers, [item_mut(id=item_a, list_id=LIST_A)])
     assert push(client, headers, [delete_list_mut(LIST_A)]).status_code == 200
     r = push(client, headers, [trip_mut([], list_id=LIST_A)])
-    assert r.status_code == 400
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "trip"
+    assert rejected[0]["detail"] == f"list is deleted: {LIST_A}"
 
 
 def test_staple_readd_stays_on_same_list(client, auth):
@@ -451,8 +498,13 @@ def test_reorder_lists_unknown_id_400_and_rollback(client, auth):
 
     ghost = str(uuid.uuid4())
     r = push(client, headers, [reorder_mut([DEFAULT_LIST, ghost, LIST_A])])
-    assert r.status_code == 400
-    # whole-batch rollback: previous order AND revs intact
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_lists"
+    assert rejected[0]["detail"] == f"unknown list: {ghost}"
+    # rejection: the whole mutation is inert — previous order AND revs intact
     assert sort_orders(client, headers) == before_orders
     assert {x["id"]: x["rev"] for x in pull(client, headers)["lists"]} == before_revs
 
@@ -463,8 +515,13 @@ def test_reorder_lists_tombstoned_id_400(client, auth):
     assert push(client, headers, [delete_list_mut(LIST_A)]).status_code == 200
     before_orders = sort_orders(client, headers)
     r = push(client, headers, [reorder_mut([DEFAULT_LIST, LIST_A])])
-    assert r.status_code == 400
-    assert sort_orders(client, headers) == before_orders
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_lists"
+    assert rejected[0]["detail"] == f"list is deleted: {LIST_A}"
+    assert sort_orders(client, headers) == before_orders  # order untouched
 
 
 def test_reorder_lists_mixed_batch_rolls_back_atomically(client, auth):
@@ -480,18 +537,39 @@ def test_reorder_lists_mixed_batch_rolls_back_atomically(client, auth):
         headers,
         [reorder_mut([DEFAULT_LIST, ghost]), item_mut(id=str(uuid.uuid4()), name="nieuw")],
     )
-    assert r.status_code == 400
-    data = pull(client, headers, watermark)  # nothing from the batch landed
-    assert data["items"] == []
-    assert data["lists"] == []
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    # the poison reorder is reported at its index ...
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_lists"
+    assert rejected[0]["detail"] == f"unknown list: {ghost}"
+    data = pull(client, headers, watermark)
+    assert data["lists"] == []  # the reorder's forbidden effect never happened
+    # ... and the VALID sibling (index 1) still applies
+    assert [x["name"] for x in data["items"] if not x["tombstone"]] == ["nieuw"]
+    assert item_id not in [x["id"] for x in data["items"]]  # watermark delta only
 
 
 def test_reorder_lists_invalid_payload_422(client, auth):
     headers = auth()
+    # request-level validation still 422s
     assert push(client, headers, [{"op": "reorder_lists"}]).status_code == 422  # missing payload
-    assert push(client, headers, [reorder_mut([])]).status_code == 422  # empty order
-    assert push(client, headers, [reorder_mut(["not-a-uuid"])]).status_code == 422
-    assert push(client, headers, [reorder_mut([DEFAULT_LIST, DEFAULT_LIST])]).status_code == 422
+
+    def body(mut):
+        r = push(client, headers, [mut])
+        assert r.status_code == 200, r.text
+        rejected = r.json()["rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["index"] == 0
+        assert rejected[0]["op"] == "reorder_lists"
+        return rejected[0]["detail"]
+
+    assert body(reorder_mut([])) == "order: the full list sequence is required"  # empty order
+    assert body(reorder_mut(["not-a-uuid"])) == "order: not a uuid: not-a-uuid"
+    assert (
+        body(reorder_mut([DEFAULT_LIST, DEFAULT_LIST])) == "order: duplicate list ids"
+    )
 
 
 def test_reorder_lists_is_idempotent_retry(client, auth):

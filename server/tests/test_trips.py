@@ -53,7 +53,8 @@ def test_bought_creates_history_snapshot(client, auth):
     r = push(client, headers, [trip_mut([{"item_id": item_id, "outcome": "bought"}])])
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body.keys()) == {"applied", "trip"}
+    assert set(body.keys()) == {"applied", "trip", "rejected"}
+    assert body["rejected"] == []
     assert body["trip"]["id"] == body["trip"]["id"]
     assert body["trip"]["duplicate"] is False
     assert body["trip"]["readded"] == []
@@ -214,15 +215,24 @@ def test_atomicity_partial_failure_leaves_no_history(client, auth):
         ]
     )
     r = push(client, headers, [item_mut(id=new_item, name="pasta"), bad_trip])
-    assert r.status_code in (400, 409, 422)
-    # nothing applied
+    # per-mutation isolation: 200 + the poison trip reported at its index;
+    # the valid item sibling still applies and commits.
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 1
+    assert rejected[0]["op"] == "trip"
+    # no forbidden effects from the rejected trip
     rows = {x["id"]: x for x in pull_all(client, headers)["items"]}
-    assert new_item not in rows
-    assert rows[item_id]["status"] == "active"
+    assert (
+        rows[item_id]["status"] == "active"
+    )  # the trip never applied (kept row: bought → completed)
     assert rows[item_id]["staple"] is True
     assert history(client, headers) == []
     actives = [x for x in rows.values() if x["name"] == "koffie" and not x["tombstone"]]
     assert len(actives) == 1  # no staple re-add happened
+    # the VALID sibling (index 0) applies despite the rejected trip
+    assert rows[new_item]["name"] == "pasta"
 
 
 def test_offline_trip_single_unit_applies_with_created_item(client, auth):
@@ -258,12 +268,19 @@ def test_bought_requires_item_id(client, auth):
 
 
 def test_unknown_item_in_decision_rejected(client, auth):
+    ghost = str(uuid.uuid4())
     r = push(
         client,
         auth(),
-        [trip_mut([{"item_id": str(uuid.uuid4()), "outcome": "bought"}])],
+        [trip_mut([{"item_id": ghost, "outcome": "bought"}])],
     )
-    assert r.status_code in (400, 409)
+    # per-mutation isolation: 200 + one rejected entry, trip never applied
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "trip"
+    assert rejected[0]["detail"] == f"unknown item in trip decisions: {ghost}"
 
 
 def test_trip_id_must_be_uuid(client, auth):

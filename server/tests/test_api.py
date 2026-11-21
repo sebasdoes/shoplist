@@ -42,7 +42,8 @@ def test_push_happy_path_and_applied_shape(client, auth):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert set(body.keys()) == {"applied", "trip"}
+    assert set(body.keys()) == {"applied", "trip", "rejected"}
+    assert body["rejected"] == []
     applied = body["applied"]
     assert set(applied.keys()) == {"items", "lists"}
     assert applied["lists"] == []

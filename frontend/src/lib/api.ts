@@ -98,6 +98,8 @@ export interface PushRequest {
 export interface PushResponse {
   applied: AppliedGroup;
   trip?: PushTripResponse;
+  /** feature-004 poison fix: entries the server could not apply, by index. */
+  rejected?: { index: number; op: string; detail: string }[];
 }
 
 export interface PullRequest {

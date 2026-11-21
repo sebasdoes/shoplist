@@ -121,9 +121,18 @@ def test_reorder_items_full_active_set_across_lists(client, auth):
     in_a = make_items(client, headers, list_id=LIST_A)[0]
     before_a = active_orders(client, headers, list_id=LIST_A)
 
-    r = push(client, headers, [reorder_mut(DEFAULT_LIST, [str(uuid.uuid4()), in_a])])
-    assert r.status_code == 400  # cross-list id
+    fresh = str(uuid.uuid4())
+    r = push(client, headers, [reorder_mut(DEFAULT_LIST, [fresh, in_a])])
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_items"
+    # the never-pushed foreign id fails the unknown-item check first
+    assert rejected[0]["detail"] == f"unknown item: {fresh}"
+    # the poison mutation is inert: LIST_A untouched, the ghost id never created
     assert active_orders(client, headers, list_id=LIST_A) == before_a
+    assert fresh not in items_by_id(client, headers)
 
 
 def test_reorder_items_other_list_untouched_on_success(client, auth):
@@ -161,7 +170,13 @@ def test_reorder_items_unknown_item_400_and_rollback(client, auth):
 
     ghost = str(uuid.uuid4())
     r = push(client, headers, [reorder_mut(DEFAULT_LIST, [a, ghost, b])])
-    assert r.status_code == 400
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_items"
+    assert rejected[0]["detail"] == f"unknown item: {ghost}"
+    # the rejected mutation is inert: orders AND revs intact
     assert active_orders(client, headers) == before_orders
     assert {i: x["rev"] for i, x in items_by_id(client, headers).items()} == before_revs
 
@@ -172,8 +187,13 @@ def test_reorder_items_tombstoned_item_400(client, auth):
     push(client, headers, [item_mut(id=b, tombstone=True)])
     before = active_orders(client, headers)
     r = push(client, headers, [reorder_mut(DEFAULT_LIST, [a, b])])
-    assert r.status_code == 400
-    assert active_orders(client, headers) == before
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_items"
+    assert rejected[0]["detail"] == f"item is deleted: {b}"
+    assert active_orders(client, headers) == before  # order untouched
 
 
 def test_reorder_items_foreign_list_item_400(client, auth):
@@ -189,7 +209,15 @@ def test_reorder_items_foreign_list_item_400(client, auth):
         headers,
         [reorder_mut(LIST_A, [in_default]), reorder_mut(DEFAULT_LIST, [in_a])],
     )
-    assert r.status_code == 400  # whole batch rolls back
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    # BOTH mutations are poison (each names a foreign item) — reported per index
+    assert [(x["index"], x["op"]) for x in rejected] == [
+        (0, "reorder_items"),
+        (1, "reorder_items"),
+    ]
+    assert rejected[0]["detail"] == f"item {in_default} belongs to another list"
+    assert rejected[1]["detail"] == f"item {in_a} belongs to another list"
     assert active_orders(client, headers) == before
     assert active_orders(client, headers, list_id=LIST_A) == before_a
 
@@ -201,17 +229,28 @@ def test_reorder_items_not_active_item_400(client, auth):
     push(client, headers, [trip_mut([{"item_id": ticked, "outcome": "bought"}])])
     before = active_orders(client, headers)
     r = push(client, headers, [reorder_mut(DEFAULT_LIST, [live, ticked])])
-    assert r.status_code == 400
-    assert active_orders(client, headers) == before
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_items"
+    assert rejected[0]["detail"] == f"item {ticked} is not active"
+    assert active_orders(client, headers) == before  # order untouched
 
 
 def test_reorder_items_unknown_list_400(client, auth):
     headers = auth()
     x = make_items(client, headers)[0]
     before = active_orders(client, headers)
-    r = push(client, headers, [reorder_mut(str(uuid.uuid4()), [x])])
-    assert r.status_code == 400
-    assert active_orders(client, headers) == before  # rollback
+    ghost_list = str(uuid.uuid4())
+    r = push(client, headers, [reorder_mut(ghost_list, [x])])
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_items"
+    assert rejected[0]["detail"] == f"unknown list: {ghost_list}"
+    assert active_orders(client, headers) == before  # order untouched
 
 
 def test_reorder_items_on_deleted_list_400(client, auth):
@@ -220,7 +259,14 @@ def test_reorder_items_on_deleted_list_400(client, auth):
     x = make_items(client, headers, list_id=LIST_A)[0]
     push(client, headers, [{"op": "delete_list", "list_id": LIST_A}])
     r = push(client, headers, [reorder_mut(LIST_A, [x])])
-    assert r.status_code == 400
+    assert r.status_code == 200, r.text
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["index"] == 0
+    assert rejected[0]["op"] == "reorder_items"
+    assert rejected[0]["detail"] == f"list is deleted: {LIST_A}"
+    # the reorder never touched the (deleted) list's items
+    assert items_by_id(client, headers)[x]["status"] == "active"
 
 
 # --- validation / 422 ------------------------------------------------------------
@@ -229,12 +275,26 @@ def test_reorder_items_on_deleted_list_400(client, auth):
 def test_reorder_items_invalid_payload_422(client, auth):
     headers = auth()
     a, b, _ = make_items(client, headers)
+    # request-level validation still 422s
     assert push(client, headers, [{"op": "reorder_items"}]).status_code == 422  # no payload
-    assert push(client, headers, [reorder_mut(DEFAULT_LIST, [])]).status_code == 422  # empty
-    assert push(client, headers, [reorder_mut(DEFAULT_LIST, ["not-a-uuid"])]).status_code == 422
-    assert push(client, headers, [reorder_mut(DEFAULT_LIST, [a, a, b])]).status_code == 422
-    bad = push(client, headers, [reorder_mut("not-a-uuid", [a])])
+    bad = push(client, headers, [reorder_mut("not-a-uuid", [a])])  # list_id not a uuid
     assert bad.status_code == 422
+
+    def body(mut):
+        r = push(client, headers, [mut])
+        assert r.status_code == 200, r.text
+        rejected = r.json()["rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["index"] == 0
+        assert rejected[0]["op"] == "reorder_items"
+        return rejected[0]["detail"]
+
+    # op-level validation is now reported per-mutation (200 + rejected)
+    assert (
+        body(reorder_mut(DEFAULT_LIST, [])) == "order: the active item sequence is required"
+    )  # empty
+    assert body(reorder_mut(DEFAULT_LIST, ["not-a-uuid"])) == "order: not a uuid: not-a-uuid"
+    assert body(reorder_mut(DEFAULT_LIST, [a, a, b])) == "order: duplicate item ids"
 
 
 # --- partial order (listed ids only) ---------------------------------------------

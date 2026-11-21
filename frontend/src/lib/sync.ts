@@ -7,6 +7,7 @@ import { apiPull, apiPush, type ApiItem, type AppliedEntry, type AppliedList } f
 import * as db from './db';
 import type { Item, OutboxStored } from './db';
 import { config } from './config';
+import { logBreadcrumb } from './log';
 import * as oidc from './oidc';
 import { nameKey } from './validate';
 import { reconcileActiveList } from './active-list';
@@ -90,6 +91,19 @@ async function flushOutbox(): Promise<void> {
       return { op: 'delete_list', list_id: e.list_id };
     }),
   });
+
+  // feature-004 poison fix — entries the server REJECTED are dropped from the
+  // outbox (they could never apply) and beaconed for diagnosis. `rejected`
+  // indexes match the mutations array, which is built 1:1 from `entries`.
+  if (res.rejected && res.rejected.length > 0) {
+    for (const rj of res.rejected) {
+      const seq = entries[rj.index]?.seq;
+      if (seq !== undefined) {
+        await db.deleteOutboxSeqs([seq]);
+        void logBreadcrumb(`push-rejected ${rj.op}: ${rj.detail}`);
+      }
+    }
+  }
 
   // T011 — the push response may carry a `lists` section alongside `applied`
   // (`applied` gains `lists` per contracts/api.md). Adopt server revs/tombstones.
