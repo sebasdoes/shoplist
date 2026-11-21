@@ -34,7 +34,7 @@
   <section>
     <h3>All purchases</h3>
     <ul class="history-list">
-      {#each historyVisible as entry (entry.id)}
+      {#each $historyVisible as entry (entry.id)}
         <li>
           <div class="entry-main">
             <span class="name">
