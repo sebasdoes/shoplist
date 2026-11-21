@@ -39,7 +39,7 @@
   let status = $state<'idle' | 'syncing' | 'offline' | 'error'>('idle');
 
   const untickedItems = $derived($activeItems.filter((i) => !i.ticked));
-  const tickedCount = $derived($activeItems.filter((i) => i.ticked).length);
+  const tickedItems = $derived($activeItems.filter((i) => i.ticked));
 
   // ---- feature-004 (T006): pointer-drag reorder of the unticked queue ----
   // The drag starts ONLY from the grip handle (ItemRow), captures the pointer,
@@ -298,12 +298,7 @@
   {/if}
 
   {#if tripSheetOpen}
-    <TripDoneSheet
-      {tickedCount}
-      unticked={untickedItems}
-      onconfirm={confirmTrip}
-      onclose={() => (tripSheetOpen = false)}
-    />
+    <TripDoneSheet ticked={tickedItems} unticked={untickedItems} onconfirm={confirmTrip} onclose={() => (tripSheetOpen = false)} />
   {/if}
 
   {#if historyOpen}

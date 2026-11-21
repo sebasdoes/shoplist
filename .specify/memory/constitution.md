@@ -14,9 +14,11 @@ The app must be fully usable with zero connectivity: browse, add, check off, del
 
 **Amended v1.1.0 (2026-11-21), explicit stakeholder decision.** Originally frozen at one list. Still true: no aisles/category grouping, no recipe integration, no sharing beyond the household, no reminders, no notifications. Now in scope: MULTIPLE named lists per household (grocery default plus per-store lists and non-shopping lists like a weekly meal plan), presented through a hamburger menu; each list has its own Trip done, its own staple pool, and its own keep/drop flow; the quick-add suggestion pool stays HOUSEHOLD-GLOBAL and is offered on every list. List management = create + delete only. **Amended again v1.2.0 (2026-11-21, stakeholder request): list REORDERING in the menu is in scope** (per-device visible order synced via the household; no other management surface — still no renaming). Adding anything beyond that requires amending this principle again, in writing.
 
-### IV. Conflict resolution is boring by design
+### IV. Boring conflict resolution; duplicates allowed per list
 
-Per-item last-write-wins using server-received timestamps (client clocks are not trusted for ordering). Identical item names auto-dedupe at sync time. Trip-complete is a single server-side event, so two people cannot half-complete the same trip into inconsistent states. No CRDTs, no merge UI, no manual conflict cleanup screens.
+**Amended v1.3.0 (2026-11-21, stakeholder request): auto-dedupe of identical names is REMOVED.** Two same-named items on the same list are independent rows with independent ids — the name_key no longer carries a uniqueness constraint, and pushes never fold onto a survivor. LWW per field stays; tombstones still win. (v1.0–v1.2 rationale: two users adding 'melk' offline produced duplicates; reality: the dedupe's survivor/merged-into machinery caused more sync bugs than it solved, and the household wants doubles.)
+
+Per-item last-write-wins using server-received timestamps (client clocks are not trusted for ordering). **From v1.3.0: identical names are allowed to coexist on the same list — no dedupe, no merge, no survivor.** Trip-complete is a single server-side event, so two people cannot half-complete the same trip into inconsistent states. No CRDTs, no merge UI, no manual conflict cleanup screens.
 
 ### V. Zero user management
 
@@ -39,4 +41,4 @@ Authentication goes through Pocket ID (OIDC, public client, PKCE). This app neve
 
 This constitution supersedes all other practices in this repo. Amendments require a documented reason, an entry in the version history below, and User A's approval. Complexity beyond a user story's acceptance scenarios must be justified against Principle III.
 
-**Version**: 1.2.0 | **Ratified**: 2026-11-21 | **Last Amended**: 2026-11-21
+**Version**: 1.3.0 | **Ratified**: 2026-11-21 | **Last Amended**: 2026-11-21

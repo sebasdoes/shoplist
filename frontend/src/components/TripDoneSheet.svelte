@@ -1,13 +1,16 @@
 <script lang="ts">
   import type { Item, TripDecision } from '../lib/db';
 
+  // T008 fix: the sheet receives the TICKED items themselves — each becomes a
+  // 'bought' trip decision. Without them the trip never archives anything
+  // (the regression: ticked items stayed crossed out forever).
   let {
-    tickedCount,
+    ticked,
     unticked,
     onconfirm,
     onclose,
   }: {
-    tickedCount: number;
+    ticked: Item[];
     unticked: Item[];
     onconfirm: (decisions: TripDecision[]) => void;
     onclose: () => void;
@@ -15,40 +18,51 @@
 
   let step = $state(0);
   let decisions = $state<TripDecision[]>([]);
-
-  // Unticked items get ONE-tap keep/drop, presented one at a time (US2-2).
-  const finished = $derived(step >= unticked.length);
+  // Bought (ticked) decisions are built up front; unticked items then get
+  // ONE-tap keep/drop, presented one at a time (US2-2).
+  const bought = $derived(
+    ticked.map((i) => ({ item_id: i.id, outcome: 'bought' as const })),
+  );
   const current = $derived(unticked[step] ?? null);
 
-  function decide(outcome: 'kept' | 'not_bought') {
-    if (!current) return;
-    decisions = [...decisions, { item_id: current.id, outcome }];
-    step += 1;
-  }
-
-  // Whole trip → ONE outbox unit; server-side idempotent retry (US2-5).
   function finish() {
-    if (!finished) return;
-    onconfirm(decisions);
+    onconfirm([...bought, ...decisions]);
   }
 </script>
 
 <div class="sheet-backdrop" role="dialog" aria-label="Trip done">
   <div class="sheet" role="document">
-    {#if !finished && current}
+    {#if ticked.length === 0 && unticked.length === 0}
+      <h2>Nothing to finish</h2>
+      <div class="actions">
+        <button class="btn-ghost" onclick={onclose}>Close</button>
+      </div>
+    {:else if current}
       <p class="progress">{step + 1} of {unticked.length} still on the list</p>
       <h2>“{current.name}”</h2>
       {#if current.quantity}<p class="meta">{current.quantity}</p>{/if}
-      <p class="meta">Bought it? If not — keep it on the list or drop it.</p>
+      <p class="meta">{ticked.length} going to history. Bought it? If not — keep or drop.</p>
       <div class="actions">
-        <button class="btn-ghost" onclick={() => decide('kept')}>Keep on list</button>
-        <button class="btn-primary" onclick={() => decide('not_bought')}>Drop</button>
+        <button
+          class="btn-ghost"
+          onclick={() => {
+            decisions = [...decisions, { item_id: current.id, outcome: 'kept' }];
+            step += 1;
+          }}
+        >Keep on list</button>
+        <button
+          class="btn-primary"
+          onclick={() => {
+            decisions = [...decisions, { item_id: current.id, outcome: 'not_bought' }];
+            step += 1;
+          }}
+        >Drop</button>
       </div>
     {:else}
       <h2>Trip done</h2>
       <p>
-        {tickedCount} item{tickedCount === 1 ? '' : 's'} go to history.
-        {#if unticked.length === 0}Nothing left to decide.{/if}
+        {ticked.length} item{ticked.length === 1 ? '' : 's'} go to history.
+        {#if decisions.length > 0}{decisions.length} decisions queued.{:else if unticked.length === 0}Nothing left to decide.{/if}
       </p>
       <div class="actions">
         <button class="btn-ghost" onclick={onclose}>Cancel</button>
