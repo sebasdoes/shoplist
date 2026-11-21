@@ -6,11 +6,18 @@
     ontoggle,
     onedit,
     onqty,
+    onhandledown,
+    dragging = false,
   }: {
     item: Item;
     ontoggle: (item: Item) => void;
     onedit: (item: Item) => void;
     onqty: (item: Item, delta: number) => void;
+    /** feature-004 — pointerdown on the drag handle (unticked rows only).
+     * Drag starts ONLY from the handle; long-press edit stays on the row body
+     * and the tick checkbox is untouched. */
+    onhandledown?: (event: PointerEvent) => void;
+    dragging?: boolean;
   } = $props();
 
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -27,7 +34,25 @@
   }
 </script>
 
-<li class="item-row" class:ticked={item.ticked} data-id={item.id}>
+<li
+  class="item-row"
+  class:ticked={item.ticked}
+  class:dragging={dragging}
+  data-id={item.id}
+  data-unticked={!item.ticked}
+>
+  {#if !item.ticked && onhandledown}
+    <!-- feature-004: the only drag entry point. grip: ⠿ -->
+    <button
+      type="button"
+      class="drag-handle"
+      aria-label={`Reorder ${item.name}`}
+      data-drag-handle
+      onpointerdown={onhandledown}
+    >
+      <span aria-hidden="true">⠿</span>
+    </button>
+  {/if}
   <input
     type="checkbox"
     class="tick"
@@ -76,6 +101,38 @@
     padding: 0.8rem 0.9rem;
     margin-bottom: 0.6rem;
     border: 1px solid var(--line);
+  }
+  /* feature-004 — the drag handle lives LEFT of the checkbox. */
+  .drag-handle {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1.4rem;
+    height: 2rem;
+    flex-shrink: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: grab;
+    /* pointer capture handles both touch and mouse; never let a touch drag
+       scroll the page, and never summon iOS text selection / context menus */
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .drag-handle:active {
+    cursor: grabbing;
+  }
+  .item-row.dragging {
+    position: relative;
+    z-index: 2;
+    opacity: 0.9;
+    border-color: var(--brand);
+    box-shadow: 0 4px 14px rgb(0 0 0 / 0.35);
   }
   .tick {
     /* Polished custom checkbox: dark surface, brand fill + check when ticked

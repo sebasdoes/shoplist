@@ -85,6 +85,8 @@ async function flushOutbox(): Promise<void> {
       if (e.op === 'create_list') return { op: 'create_list', list: e.list };
       // feature-003 — the full ordered id array rides as ONE op (schema v3)
       if (e.op === 'reorder_lists') return { op: 'reorder_lists', order: e.order };
+      // feature-004 — flat wire shape: { list_id, order: [item ids] } (schema v4)
+      if (e.op === 'reorder_items') return { op: 'reorder_items', list_id: e.list_id, order: e.order };
       return { op: 'delete_list', list_id: e.list_id };
     }),
   });
@@ -143,6 +145,14 @@ async function flushOutbox(): Promise<void> {
       }
       continue;
     }
+    if (entry.op === 'reorder_items') {
+      // feature-004 — confirmed by the applied.items echo: the server echoes
+      // the reordered rows with fresh revs. Until then the op stays queued.
+      if (entry.order.some((id) => appliedById.has(id))) {
+        seqsDone.push(entry.seq);
+      }
+      continue;
+    }
     const applied = appliedById.get(entry.item.id);
     if (applied) {
       if (applied.merged_into) {
@@ -155,6 +165,29 @@ async function flushOutbox(): Promise<void> {
   }
 
   await db.deleteOutboxSeqs(seqsDone);
+
+  // feature-004 — reorder echo adoption: the reordered rows come back in
+  // applied.items with fresh revs (and, from v4 servers, the assigned
+  // sort_order). Persist rank + rev WITHOUT overwriting other local fields.
+  const reorderedEchoes = new Set(
+    entries.flatMap((e) => (e.op === 'reorder_items' ? e.order : [])),
+  );
+  if (reorderedEchoes.size > 0) {
+    for (const a of appliedItems) {
+      if (a.merged_into || !reorderedEchoes.has(a.id)) continue;
+      const existing = await db.getItem(a.id);
+      if (!existing) continue;
+      const merged: Item = { ...existing };
+      // sort_order is server-assigned on reorder — always adopt it on the echo
+      if (a.sort_order !== undefined) merged.sort_order = a.sort_order;
+      if (a.rev > merged.rev) {
+        merged.rev = a.rev;
+        if (a.updated_at) merged.updated_at = a.updated_at;
+      }
+      await db.putItem(merged);
+    }
+  }
+
   if (appliedLists && appliedLists.length > 0) await reconcileActiveList();
 }
 
@@ -205,6 +238,9 @@ function apiItemToLocal(row: ApiItem, existing?: Item): Item {
     updated_at: existing?.updated_at ?? '',
     rev: row.rev,
     list_id: row.list_id ?? existing?.list_id ?? db.DEFAULT_LIST_ID,
+    // feature-004 (schema v4): the pull row carries the server-assigned order;
+    // absent (pre-v4 server) → keep the local value, else 0.
+    sort_order: row.sort_order ?? existing?.sort_order ?? 0,
     ticked: existing?.ticked ?? false,
     ticked_at: existing?.ticked_at ?? null,
     local_created_at: existing?.local_created_at ?? now,

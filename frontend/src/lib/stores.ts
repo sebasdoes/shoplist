@@ -41,16 +41,20 @@ export const activeList = derived(
   ([lists, id]) => lists.find((l) => l.id === id && !l.tombstone) ?? null,
 );
 
-/** The single list: active, not tombstoned. Unticked queue first (newest on
- * top for thumb reach), ticked visually separate below. T007: scoped to the
- * ACTIVE list only. */
+/** The single list: active, not tombstoned. Unticked queue first, ticked
+ * visually separate below. T007: scoped to the ACTIVE list only.
+ * feature-004: the unticked queue orders by sort_order (schema v4, lower
+ * renders first) with the legacy newest-first order as tie-break; ticked
+ * rows keep the newest-first order (their sort_order is unused while ticked). */
 export const activeItems = derived([itemsStore, activeListId], ([items, listId]) => {
   const live = items.filter(
     (i) => i.status === 'active' && !i.tombstone && (i.list_id ?? db.DEFAULT_LIST_ID) === listId,
   );
   const fresh = (a: Item, b: Item) =>
     (b.local_created_at || '').localeCompare(a.local_created_at || '');
-  const unticked = live.filter((i) => !i.ticked).sort(fresh);
+  const byQueueOrder = (a: Item, b: Item) =>
+    (a.sort_order ?? 0) - (b.sort_order ?? 0) || fresh(a, b) || a.id.localeCompare(b.id);
+  const unticked = live.filter((i) => !i.ticked).sort(byQueueOrder);
   const ticked = live.filter((i) => i.ticked).sort(fresh);
   return [...unticked, ...ticked];
 });
@@ -123,6 +127,18 @@ async function reloadItems(): Promise<void> {
   itemsStore.set(await db.getAllItems());
 }
 
+/** feature-004 — top-insert rank for a NEW active row of a list: one below
+ * the lowest active sort_order of that list (server applies the same rule, so
+ * the client optimistic order matches the post-sync truth). */
+export async function nextTopSortOrder(listId: string): Promise<number> {
+  const actives = (await db.getAllItems()).filter(
+    (i) => !i.tombstone && i.status === 'active' && (i.list_id ?? db.DEFAULT_LIST_ID) === listId,
+  );
+  if (actives.length === 0) return 0;
+  const min = actives.reduce((m, i) => Math.min(m, i.sort_order ?? 0), Infinity);
+  return min - 1;
+}
+
 async function reloadHistory(): Promise<void> {
   historyStore.set(await db.getAllHistory());
 }
@@ -144,6 +160,7 @@ export async function addItem(
   const err = validateItem({ name, quantity, note });
   if (err) throw new Error(err);
 
+  const listId = get(activeListId) || db.DEFAULT_LIST_ID;
   const now = new Date().toISOString();
   const item: Item = {
     id: uuid(),
@@ -158,7 +175,9 @@ export async function addItem(
     created_at: now, // placeholder; the server stamps on receipt
     updated_at: now,
     rev: 0,
-    list_id: get(activeListId) || db.DEFAULT_LIST_ID,
+    list_id: listId,
+    // feature-004: new ACTIVE items enter at the TOP of the unticked queue.
+    sort_order: await nextTopSortOrder(listId),
     ticked: false,
     ticked_at: null,
     local_created_at: now,
@@ -340,6 +359,53 @@ export async function reorderLists(orderedIds: string[]): Promise<void> {
   await db.putLists(rows);
   await db.enqueueOutbox({ op: 'reorder_lists', order, ts: new Date().toISOString() });
   await reloadLists();
+  void requestBackgroundSync();
+  schedulePostMutationSync();
+}
+
+// ---- feature-004: drag-reorder the unticked shopping queue ----
+
+/** Canonical unticked queue order (mirrors the activeItems derived sort). */
+function untickedQueueOrder(live: Item[]): Item[] {
+  const fresh = (a: Item, b: Item) =>
+    (b.local_created_at || '').localeCompare(a.local_created_at || '');
+  return live
+    .filter((i) => !i.ticked)
+    .sort(
+      (a, b) =>
+        (a.sort_order ?? 0) - (b.sort_order ?? 0) || fresh(a, b) || a.id.localeCompare(b.id),
+    );
+}
+
+/** Optimistic drag-end commit (called once per drop, after the live preview):
+ * apply the new sort_order to IndexedDB IMMEDIATELY (constitution I), then
+ * enqueue ONE `reorder_items` mutation with the complete unticked active set
+ * of that list. Unknown ids are dropped, omitted ids keep their current slot,
+ * and an unchanged sequence writes nothing — no mutation, no sync trigger. */
+export async function reorderItems(listId: string, orderedIds: string[]): Promise<void> {
+  const live = (await db.getAllItems()).filter(
+    (i) => !i.tombstone && i.status === 'active' && (i.list_id ?? db.DEFAULT_LIST_ID) === listId,
+  );
+  const queue = untickedQueueOrder(live);
+  const current = queue.map((i) => i.id);
+  const queueIds = new Set(current);
+
+  const order: string[] = [];
+  for (const id of orderedIds) {
+    if (queueIds.has(id) && !order.includes(id)) order.push(id);
+  }
+  // complete the set — the server's final authority expects the full active set
+  for (const id of current) {
+    if (!order.includes(id)) order.push(id);
+  }
+  if (order.length <= 1 || order.join('\u0000') === current.join('\u0000')) return;
+
+  const rank = new Map(order.map((id, i) => [id, i] as const));
+  const rows = queue.map((i) => ({ ...i, sort_order: rank.get(i.id) as number }));
+  // 1. persist BEFORE any network (constitution I), 2. queue ONE op.
+  await db.putItems(rows);
+  await db.enqueueOutbox({ op: 'reorder_items', list_id: listId, order, ts: new Date().toISOString() });
+  await reloadItems();
   void requestBackgroundSync();
   schedulePostMutationSync();
 }

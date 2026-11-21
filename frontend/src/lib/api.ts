@@ -15,6 +15,9 @@ export interface ApiItem {
   rev: number;
   /** Owning list (schema v2). Present in pull responses from v2 servers. */
   list_id?: string;
+  /** feature-004 (schema v4): display rank for the active queue. Absent on
+   * pre-v4 servers → the caller keeps its local value. */
+  sort_order?: number;
 }
 
 export interface AppliedEntry {
@@ -22,6 +25,8 @@ export interface AppliedEntry {
   rev: number;
   updated_at: string;
   merged_into: string | null;
+  /** feature-004: the reorder echo carries the server-assigned index. */
+  sort_order?: number;
 }
 
 export interface AppliedGroup {
@@ -47,7 +52,13 @@ export interface PushItemMutation {
 }
 
 export interface PushMutation {
-  op: 'upsert_item' | 'trip' | 'create_list' | 'delete_list' | 'reorder_lists';
+  op:
+    | 'upsert_item'
+    | 'trip'
+    | 'create_list'
+    | 'delete_list'
+    | 'reorder_lists'
+    | 'reorder_items';
   item?: PushItemMutation;
   trip?: {
     id: string;
@@ -56,7 +67,7 @@ export interface PushMutation {
   };
   list?: { id: string; name: string };
   list_id?: string;
-  /** reorder_lists: every live list id in the new household-wide sequence. */
+  /** reorder_lists / reorder_items: the new sequence as a flat id array. */
   order?: string[];
 }
 

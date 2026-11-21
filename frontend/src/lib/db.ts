@@ -20,6 +20,11 @@ export interface Item {
   rev: number;
   /** Owning list (schema v2). Required for every push mutation. */
   list_id: string;
+  /** feature-004 (schema v4): display order for the list's active queue,
+   * lower renders first. Server-assigned sequential on reorder; new items
+   * get min−1 (top insert). Rides the row — no structural IDB change; rows
+   * without it (pre-v4 local values / older server rows) read as 0. */
+  sort_order: number;
   // Local-only conveniences (never sent to the server):
   ticked: boolean;
   ticked_at: string | null;
@@ -114,6 +119,16 @@ export type OutboxEntry =
   | {
       op: 'reorder_lists';
       order: string[]; // every live list id, new sequence
+      ts: string;
+      seq?: number;
+    }
+  // feature-004 — reorder a list's ACTIVE unticked queue, one op (schema v4).
+  // FLAT wire shape: { list_id, order: [item ids] } — order is a COMPLETE
+  // unticked active set of that list; ticked rows keep their sort_order.
+  | {
+      op: 'reorder_items';
+      list_id: string;
+      order: string[];
       ts: string;
       seq?: number;
     };

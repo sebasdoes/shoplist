@@ -60,8 +60,8 @@ def test_migrates_v2_db_adds_sort_order(tmp_path):
     conn = db.connect(path)  # migration runs as part of connect()
 
     assert "sort_order" in list_columns(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
-    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
 
     # sequential backfill by (created_at, rowid): default list oldest → 0, then
     # B; the created_at tie between A and C breaks by rowid
@@ -84,7 +84,7 @@ def test_migration3_is_idempotent(tmp_path):
     db.migrate(conn)
     conn.commit()
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     after = [tuple(r) for r in conn.execute("SELECT * FROM lists ORDER BY id").fetchall()]
     assert after == before
     # ALTER did not run twice (duplicate column would have raised)
@@ -96,8 +96,8 @@ def test_fresh_install_gains_sort_order_directly(tmp_path):
     conn = db.connect(path)
 
     assert "sort_order" in list_columns(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
-    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
     # the seeded default list is the only row → sequential order starts at 0
     assert sort_orders(conn) == {DEFAULT_LIST_ID: 0}
     seed = conn.execute(
@@ -107,18 +107,25 @@ def test_fresh_install_gains_sort_order_directly(tmp_path):
     assert seed["tombstone"] == 0
 
 
-def test_v1_db_migrates_straight_to_v3(tmp_path):
-    """A v1 database migrates through v2 to v3 in one connect()."""
+def test_v1_db_migrates_straight_to_v4(tmp_path):
+    """A v1 database migrates through v2/v3 to v4 in one connect()."""
     from tests.test_migration2 import make_v1_db
 
     path = str(tmp_path / "v1.db")
     make_v1_db(path)
     conn = db.connect(path)
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     assert "sort_order" in list_columns(conn)
     # seed row is inserted after the backfill → keeps its default 0
     assert sort_orders(conn) == {DEFAULT_LIST_ID: 0}
+    # v4 items backfill ran: the one active, live item orders the queue
+    item_orders = {
+        r["id"]: r["sort_order"] for r in conn.execute("SELECT id, sort_order FROM items")
+    }
+    assert item_orders["11111111-1111-4111-8111-111111111111"] == 0  # active → 0
+    assert item_orders["22222222-2222-4222-8222-222222222222"] == 0  # completed → untouched
+    assert item_orders["33333333-3333-4333-8333-333333333333"] == 0  # tombstoned → untouched
     seed = conn.execute("SELECT name FROM lists WHERE id = ?", (DEFAULT_LIST_ID,)).fetchone()
     assert seed["name"] == "Boodschappen"
     # v2 backfills still applied

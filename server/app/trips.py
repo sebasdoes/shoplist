@@ -10,7 +10,7 @@ import sqlite3
 from . import db
 from .auth import AuthUser
 from .models import Readded, TripDecision, TripMutation, TripResponse
-from .sync import SyncError, require_live_list
+from .sync import SyncError, require_live_list, top_insert_sort_order
 
 
 def _fetch_item(conn: sqlite3.Connection, item_id: str) -> sqlite3.Row | None:
@@ -145,8 +145,8 @@ def apply_trip(conn: sqlite3.Connection, trip: TripMutation, user: AuthUser) -> 
         new_id = db.new_id()
         conn.execute(
             "INSERT INTO items (id, list_id, name, name_key, quantity, note, status, staple, "
-            "created_by, created_at, updated_at, rev, tombstone) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, 0)",
+            "created_by, created_at, updated_at, rev, tombstone, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, 0, ?)",
             (
                 new_id,
                 row["list_id"],  # re-add lands on the same list (data-model v2)
@@ -158,6 +158,7 @@ def apply_trip(conn: sqlite3.Connection, trip: TripMutation, user: AuthUser) -> 
                 now,
                 now,
                 db.next_rev(conn),
+                top_insert_sort_order(conn, row["list_id"]),  # v4: re-enters at the top
             ),
         )
         readded.append(Readded(id=new_id, name=row["name"]))

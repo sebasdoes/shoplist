@@ -168,7 +168,9 @@ class ListPayload(BaseModel):
 class Mutation(BaseModel):
     model_config = {"extra": "forbid", "populate_by_name": True}
 
-    op: Literal["upsert_item", "trip", "create_list", "delete_list", "reorder_lists"]
+    op: Literal[
+        "upsert_item", "trip", "create_list", "delete_list", "reorder_lists", "reorder_items"
+    ]
     item: UpsertItem | None = None
     trip: TripMutation | None = None
     list: ListPayload | None = None
@@ -194,6 +196,8 @@ class Mutation(BaseModel):
             raise ValueError("delete_list requires list_id")
         if self.op == "reorder_lists" and self.order is None:
             raise ValueError("reorder_lists requires order")
+        if self.op == "reorder_items" and (self.list_id is None or self.order is None):
+            raise ValueError("reorder_items requires list_id and order")
         return self
 
 
@@ -270,6 +274,8 @@ class ItemOut(BaseModel):
     tombstone: bool
     created_by: str
     rev: int
+    # v4: per-list display position for the ACTIVE queue (unused while ticked)
+    sort_order: int = 0
 
 
 class HistoryOut(BaseModel):
@@ -306,6 +312,7 @@ def _row_to_item(row: Any) -> ItemOut:
         tombstone=bool(row["tombstone"]),
         created_by=row["created_by"],
         rev=row["rev"],
+        sort_order=row["sort_order"],
     )
 
 

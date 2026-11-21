@@ -13,7 +13,9 @@
     completeTrip,
     loadStoresFromDb,
     wireStoresToSync,
+    reorderItems, // feature-004 (T006)
   } from './lib/stores';
+  import { moveItemToIndex, sequenceChanged, slotIndexAt, type RowRect } from './lib/drag';
   import { initSyncTriggers, onSyncComplete, runSync } from './lib/sync';
   import { initDb } from './lib/db';
   import { bootErr, bootStep, buildId } from './lib/diag';
@@ -38,6 +40,71 @@
 
   const untickedItems = $derived($activeItems.filter((i) => !i.ticked));
   const tickedCount = $derived($activeItems.filter((i) => i.ticked).length);
+
+  // ---- feature-004 (T006): pointer-drag reorder of the unticked queue ----
+  // The drag starts ONLY from the grip handle (ItemRow), captures the pointer,
+  // and re-renders the list live as the pointer crosses row gaps. Touch and
+  // mouse ride the same Pointer Events path. Long-press edit (on .item-main)
+  // and the tick checkbox never see handle drags.
+  let dragId = $state<string | null>(null);
+  let dragListId = $state('');
+  let dragOrder = $state<string[]>([]);
+  /** Layout captured once at drag start: stable slot rectangles per unticked row. */
+  let rowRects = $state<RowRect[]>([]);
+  let startOrder: string[] = [];
+  /** The list <ul> — source of the unticked row rectangles for slot math. */
+  let listContainer: HTMLUListElement | null = null;
+
+  const untickedOrder = $derived(untickedItems.map((i) => i.id));
+  /** While dragging: the live preview order; otherwise the persisted queue. */
+  const untickedDisplay = $derived(dragId ? dragOrder : untickedOrder);
+  const untickedById = $derived(new Map(untickedItems.map((i) => [i.id, i])));
+  const tickedRows = $derived($activeItems.filter((i) => i.ticked));
+
+  function onHandleDown(id: string, listId: string, event: PointerEvent): void {
+    if (dragId || event.button !== 0) return; // already dragging / non-primary
+    const container = listContainer;
+    if (!container || untickedOrder.length < 2) return; // nothing to rearrange
+    const rows = [
+      ...container.querySelectorAll<HTMLElement>('li[data-unticked="true"]'),
+    ];
+    if (rows.length < 2) return;
+    rowRects = rows.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom };
+    });
+    dragId = id;
+    dragListId = listId;
+    dragOrder = untickedOrder;
+    startOrder = untickedOrder;
+    // capture: pointermove/up keep flowing even when the pointer leaves the row
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('pointerup', onDragEnd);
+    window.addEventListener('pointercancel', onDragEnd);
+  }
+
+  function onDragMove(event: PointerEvent): void {
+    if (!dragId || event.pointerId === undefined) return;
+    const slot = slotIndexAt(rowRects, event.clientY);
+    const next = moveItemToIndex(dragOrder, dragId, slot);
+    if (sequenceChanged(dragOrder, next)) dragOrder = next; // live preview
+  }
+
+  function onDragEnd(event: PointerEvent): void {
+    if (!dragId) return;
+    window.removeEventListener('pointermove', onDragMove);
+    window.removeEventListener('pointerup', onDragEnd);
+    window.removeEventListener('pointercancel', onDragEnd);
+    const finalOrder = dragOrder;
+    const listId = dragListId;
+    const moved = sequenceChanged(startOrder, finalOrder);
+    dragId = null;
+    dragOrder = [];
+    rowRects = [];
+    startOrder = [];
+    if (moved && listId) void reorderItems(listId, finalOrder); // ONE op per drop
+  }
 
   onMount(async () => {
     bootStep('onmount');
@@ -180,17 +247,32 @@
 
   <AddBar onadd={(name, quantity) => void addItem({ name, quantity })} />
 
-  <ul class="list">
-    {#each $activeItems as item (item.id)}
-      <ItemRow
-        {item}
-        ontoggle={(i) => void toggleTick(i)}
-        onedit={(i) => (editing = i)}
-        onqty={(i, d) => void bumpQuantity(i, d)}
-      />
-    {:else}
+  <ul class="list" bind:this={listContainer}>
+    {#if $activeItems.length === 0}
       <li class="empty-hint">Nothing here yet — add the first item above.</li>
-    {/each}
+    {:else}
+      {#each untickedDisplay as id (id)}
+        {@const untickedItem = untickedById.get(id)}
+        {#if untickedItem}
+          <ItemRow
+            item={untickedItem}
+            dragging={dragId === id}
+            ontoggle={(i) => void toggleTick(i)}
+            onedit={(i) => (editing = i)}
+            onqty={(i, d) => void bumpQuantity(i, d)}
+            onhandledown={(e) => onHandleDown(untickedItem.id, untickedItem.list_id, e)}
+          />
+        {/if}
+      {/each}
+      {#each tickedRows as item (item.id)}
+        <ItemRow
+          {item}
+          ontoggle={(i) => void toggleTick(i)}
+          onedit={(i) => (editing = i)}
+          onqty={(i, d) => void bumpQuantity(i, d)}
+        />
+      {/each}
+    {/if}
   </ul>
 
   <div class="footer-actions">

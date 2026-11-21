@@ -65,6 +65,7 @@ export function seedItem(overrides: Partial<Item> = {}): Item {
     updated_at: now,
     rev: overrides.rev ?? 10,
     list_id: overrides.list_id ?? db.DEFAULT_LIST_ID,
+    sort_order: overrides.sort_order ?? 0, // feature-004 (schema v4)
     ticked: overrides.ticked ?? false,
     ticked_at: overrides.ticked_at ?? null,
     local_created_at: overrides.local_created_at ?? now,

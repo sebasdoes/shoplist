@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import unicodedata
 import uuid
+from collections.abc import Sequence
 
 from . import db
 from .auth import AuthUser
@@ -84,6 +85,19 @@ def _fetch_applied(row: sqlite3.Row, merged_into: str | None) -> Applied:
     )
 
 
+def top_insert_sort_order(conn: sqlite3.Connection, list_id: str) -> int:
+    """v4: a NEW active item enters at the TOP of its list's queue —
+    one below (before) the current minimum active sort_order. Lists without
+    active items start at -1 → 0, 1, ... as items keep arriving above."""
+    row = conn.execute(
+        "SELECT MIN(sort_order) FROM items WHERE list_id = ? AND status = 'active'"
+        " AND tombstone = 0",
+        (list_id,),
+    ).fetchone()
+    minimum = row[0]
+    return (minimum if minimum is not None else 0) - 1
+
+
 def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> Applied:
     """Apply one pushed item mutation (in-order, inside the push transaction)."""
     require_live_list(conn, item.list_id)  # unknown/tombstoned → 400, batch rolls back
@@ -149,10 +163,13 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
     now = db.stamp()
     name = (item.name or "").strip() if "name" in fields else ""
     key = name_key(name) if name else ""
+    # v4: new rows enter at the TOP of the queue; tombstone rows carry an
+    # unused sort_order (they never display).
+    sort_order = 0 if is_delete else top_insert_sort_order(conn, item.list_id)
     conn.execute(
         "INSERT INTO items (id, list_id, name, name_key, quantity, note, status, staple, "
-        "created_by, created_at, updated_at, rev, tombstone) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+        "created_by, created_at, updated_at, rev, tombstone, sort_order) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
         (
             item.id,
             item.list_id,
@@ -166,6 +183,7 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
             now,
             rev,
             1 if is_delete else 0,
+            sort_order,
         ),
     )
     return _fetch_applied(_fetch_row(conn, item.id), None)
@@ -322,6 +340,50 @@ def apply_reorder_lists(
     return applied
 
 
+def apply_reorder_items(
+    conn: sqlite3.Connection, list_id: str, order: Sequence[str], user: AuthUser
+) -> list[Applied]:
+    """reorder_items (feature 004): assigns sort_order = index for each item id
+    in the given sequence and bumps each row's rev via next_rev, so SSE/feeds
+    and the pull watermark propagate the new order to every device.
+    Only ACTIVE, live items of THAT list may appear — unknown, tombstoned,
+    foreign-list or ticked (completed/dropped) ids → 400; the push transaction
+    rolls back anyway, so a failure leaves every order untouched.
+    Wire shape is FLAT: {"op": "reorder_items", "list_id": uuid,
+    "order": [uuid, ...]} — the client is the final authority and normally
+    sends the complete active set; partial sequences are accepted and assign
+    indices only to the listed ids (validation first: non-empty, uuids, no
+    duplicates; 422)."""
+    require_live_list(conn, list_id)  # unknown/tombstoned list → 400, batch rolls back
+    if not order:
+        raise SyncError("order: the active item sequence is required", 422)
+    if len(set(order)) != len(order):
+        raise SyncError("order: duplicate item ids", 422)
+    for item_id in order:
+        try:
+            uuid.UUID(item_id)
+        except (ValueError, TypeError):
+            raise SyncError(f"order: not a uuid: {item_id}", 422) from None
+        row = _fetch_row(conn, item_id)
+        if row is None:
+            raise SyncError(f"unknown item: {item_id}", 400)
+        if row["tombstone"]:
+            raise SyncError(f"item is deleted: {item_id}", 400)
+        if row["list_id"] != list_id:
+            raise SyncError(f"item {item_id} belongs to another list", 400)
+        if row["status"] != "active":
+            raise SyncError(f"item {item_id} is not active", 400)
+
+    applied: list[Applied] = []
+    for index, item_id in enumerate(order):
+        rev = db.next_rev(conn)
+        conn.execute(
+            "UPDATE items SET sort_order = ?, rev = ? WHERE id = ?", (index, rev, item_id)
+        )
+        applied.append(_fetch_applied(_fetch_row(conn, item_id), None))
+    return applied
+
+
 def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> PushResponse:
     applied: list[Applied] = []
     applied_lists: list[AppliedList] = []
@@ -342,6 +404,11 @@ def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> Push
             elif mutation.op == "reorder_lists":
                 assert mutation.order is not None
                 applied_lists.extend(apply_reorder_lists(conn, mutation.order, user))
+            elif mutation.op == "reorder_items":
+                assert mutation.list_id is not None and mutation.order is not None
+                applied.extend(
+                    apply_reorder_items(conn, mutation.list_id, mutation.order, user)
+                )
             else:
                 assert mutation.trip is not None
                 from . import trips as trips_mod

@@ -1,4 +1,4 @@
-"""T002 — SQLite (WAL) helpers, schema v1→v2→v3 migration runner, global rev sequence.
+"""T002 — SQLite (WAL) helpers, schema v1→v2→v3→v4 migration runner, global rev sequence.
 
 Schema v2 (specs/002 data-model.md): adds `lists`, seeds the default list
 `Boodschappen` (fixed uuid), backfills items/trips/history `list_id`, and
@@ -8,6 +8,13 @@ Schema v3 (feature 003 menu-polish): adds `lists.sort_order`
 (INTEGER NOT NULL DEFAULT 0) and backfills a sequential order by
 (created_at, rowid). Gated by PRAGMA user_version; idempotent; the rev
 sequence is untouched by v3.
+
+Schema v4 (feature 004 item-reorder): adds `items.sort_order`
+(INTEGER NOT NULL DEFAULT 0) and backfills a sequential order over the
+ACTIVE, live items of each list by (created_at DESC, rev DESC) — newest
+first, matching the current display. sync_meta is lifted above the max
+data rev BEFORE the backfilled rows' rev bumps (the v2/v3 lesson), so
+devices already past the watermark still receive the order.
 """
 
 from __future__ import annotations
@@ -17,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DEFAULT_LIST_ID = "00000000-0000-4000-8000-000000000001"
 DEFAULT_LIST_NAME = "Boodschappen"
@@ -114,6 +121,27 @@ _V3_ADD_SORT_ORDER = "ALTER TABLE lists ADD COLUMN sort_order INTEGER NOT NULL D
 # Full v3 DDL for fresh installs: v2 schema + sort_order directly (no ALTER).
 _SCHEMA_V3 = _SCHEMA_V2 + _V3_ADD_SORT_ORDER + ";"
 
+# v4: items gain a per-list display position for the ACTIVE queue. ALTER keeps
+# existing data; the backfill assigns sequential order 0..n-1 to each list's
+# active+live rows by (created_at DESC, rev DESC) — newest first, matching the
+# current display. Ticked/tombstoned rows keep the default 0 (unused while ticked).
+_V4_ADD_ITEM_SORT_ORDER = "ALTER TABLE items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+
+# Full v4 DDL for fresh installs: v3 schema + items.sort_order directly (no ALTER).
+_SCHEMA_V4 = _SCHEMA_V3 + _V4_ADD_ITEM_SORT_ORDER + ";"
+
+
+def _max_data_rev(conn: sqlite3.Connection) -> int:
+    """MAX(rev) over all data tables (the watermark floor new revs must clear)."""
+    row = conn.execute(
+        "SELECT MAX(m) FROM ("
+        "SELECT MAX(rev) AS m FROM lists UNION ALL "
+        "SELECT MAX(rev) FROM items UNION ALL "
+        "SELECT MAX(rev) FROM history UNION ALL "
+        "SELECT MAX(rev) FROM trips)"
+    ).fetchone()
+    return row[0] or 0
+
 
 def stamp() -> str:
     """Server-stamped ISO-8601 UTC timestamp (client clocks are not trusted)."""
@@ -174,8 +202,8 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         if current == 0:
-            # Fresh install: build the full v3 schema directly, then seed.
-            _run_script(conn, _SCHEMA_V3)
+            # Fresh install: build the full v4 schema directly, then seed.
+            _run_script(conn, _SCHEMA_V4)
         else:
             if current == 1:
                 # v1 → v2 one-shot migration, backfills default to the seeded list.
@@ -187,31 +215,55 @@ def migrate(conn: sqlite3.Connection) -> None:
                     "VALUES (?, ?)",
                     (2, stamp()),
                 )
-            # v2 → v3 (also reached straight from v1 in the same transaction)
-            conn.execute(_V3_ADD_SORT_ORDER)
+            # v2 → v3 (also reached straight from v1 in the same transaction);
+            # not re-run for databases already at v3.
+            if current < 3:
+                conn.execute(_V3_ADD_SORT_ORDER)
+                # Lift sync_meta above any seeded data revs FIRST (same lesson as
+                # v2): otherwise devices already past these revs never see the
+                # new sort_order via delta pulls.
+                floor = _max_data_rev(conn)
+                if floor > 0:
+                    conn.execute(
+                        "UPDATE sync_meta SET value = MAX(value, ?) WHERE key = 'rev'", (floor,)
+                    )
+                rows = conn.execute("SELECT id FROM lists ORDER BY created_at, rowid").fetchall()
+                for index, row in enumerate(rows):
+                    rev = next_rev(conn)  # bump: devices past this watermark must
+                    conn.execute(          # receive the new order via delta pull
+                        "UPDATE lists SET sort_order = ?, rev = ? WHERE id = ?",
+                        (index, rev, row["id"]),
+                    )
+            # v2/v3 → v4 (also reached straight from v1/v2 in the same transaction):
+            # items gain a per-list display position for the ACTIVE queue.
+            conn.execute(_V4_ADD_ITEM_SORT_ORDER)
             # Lift sync_meta above any seeded data revs FIRST (same lesson as
-            # v2): otherwise devices already past these revs never see the
+            # v2/v3): otherwise devices already past these revs never see the
             # new sort_order via delta pulls.
-            floor = conn.execute(
-                "SELECT MAX(m) FROM ("
-                "SELECT MAX(rev) AS m FROM lists UNION ALL "
-                "SELECT MAX(rev) FROM items UNION ALL "
-                "SELECT MAX(rev) FROM history UNION ALL "
-                "SELECT MAX(rev) FROM trips)"
-            ).fetchone()[0] or 0
+            floor = _max_data_rev(conn)
             if floor > 0:
                 conn.execute(
                     "UPDATE sync_meta SET value = MAX(value, ?) WHERE key = 'rev'", (floor,)
                 )
-            rows = conn.execute("SELECT id FROM lists ORDER BY created_at, rowid").fetchall()
-            for index, row in enumerate(rows):
-                rev = next_rev(conn)  # bump: devices past this watermark must
-                conn.execute(          # receive the new order via delta pull
-                    "UPDATE lists SET sort_order = ?, rev = ? WHERE id = ?",
-                    (index, rev, row["id"]),
-                )
+            # Backfill the ACTIVE, live queue of each list sequentially,
+            # newest first (created_at DESC, rev DESC) — matching the current
+            # display order. Ticked and tombstoned rows keep the default 0.
+            for list_row in conn.execute("SELECT id FROM lists").fetchall():
+                item_rows = conn.execute(
+                    "SELECT id FROM items WHERE list_id = ? AND status = 'active'"
+                    " AND tombstone = 0 ORDER BY created_at DESC, rev DESC",
+                    (list_row["id"],),
+                ).fetchall()
+                for index, item_row in enumerate(item_rows):
+                    # bump: devices past this watermark must receive the
+                    # backfilled order via delta pull
+                    rev = next_rev(conn)
+                    conn.execute(
+                        "UPDATE items SET sort_order = ?, rev = ? WHERE id = ?",
+                        (index, rev, item_row["id"]),
+                    )
         _seed_default_list(conn)
-        conn.execute("PRAGMA user_version = 3")
+        conn.execute("PRAGMA user_version = 4")
         conn.execute(
             "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (SCHEMA_VERSION, stamp()),

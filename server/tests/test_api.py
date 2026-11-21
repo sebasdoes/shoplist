@@ -75,6 +75,7 @@ def test_pull_response_shape(client, auth):
         "tombstone",
         "created_by",
         "rev",
+        "sort_order",  # v4: per-list display position
     }
     for row in body["items"]:
         assert set(row.keys()) == item_fields
