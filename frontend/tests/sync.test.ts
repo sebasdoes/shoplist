@@ -189,7 +189,11 @@ describe('sync loop (T020/T021)', () => {
     // queue a trip "bought" for srv-2 (as completeTrip would)
     await db.enqueueOutbox({
       op: 'trip',
-      trip: { id: crypto.randomUUID(), decisions: [{ item_id: 'srv-2', outcome: 'bought' }] },
+      trip: {
+        id: crypto.randomUUID(),
+        list_id: 'list-1',
+        decisions: [{ item_id: 'srv-2', outcome: 'bought' }],
+      },
       ts: new Date().toISOString(),
     });
     await db.putItem({ ...item, status: 'completed' }); // local transition

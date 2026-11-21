@@ -18,11 +18,26 @@ export interface Item {
   created_at: string;
   updated_at: string;
   rev: number;
+  /** Owning list (schema v2). Required for every push mutation. */
+  list_id: string;
   // Local-only conveniences (never sent to the server):
   ticked: boolean;
   ticked_at: string | null;
   local_created_at: string; // client ordering only, not a conflict source
 }
+
+/** T006 — lists store (schema v2), mirroring the server `lists` table. */
+export interface List {
+  id: string;
+  name: string; // trimmed, ≤100 chars, NOT unique
+  created_by: string | null;
+  created_at: string;
+  tombstone: boolean;
+  rev: number;
+}
+
+/** Fixed uuid of the migration-seeded default list (data-model.md). */
+export const DEFAULT_LIST_ID = '00000000-0000-4000-8000-000000000001';
 
 export interface HistoryEntry {
   id: string;
@@ -46,12 +61,16 @@ export interface TripDecision {
 
 export interface PushTrip {
   id: string;
+  /** Trips are scoped to ONE list; decisions resolve within it (FR-017). */
+  list_id: string;
   decisions: TripDecision[];
 }
 
 /** Item payload shaped exactly for POST /sync/push `upsert_item` (contracts/api.md). */
 export interface OutboxItemMutation {
   id: string;
+  /** Owning list — REQUIRED by the v2 contract on every upsert_item. */
+  list_id: string;
   name?: string;
   quantity?: string | null;
   note?: string | null;
@@ -73,6 +92,19 @@ export type OutboxEntry =
       trip: PushTrip;
       ts: string;
       seq?: number;
+    }
+  // T011 — list ops ride the SAME outbox (FR-022)
+  | {
+      op: 'create_list';
+      list: { id: string; name: string };
+      ts: string;
+      seq?: number;
+    }
+  | {
+      op: 'delete_list';
+      list_id: string;
+      ts: string;
+      seq?: number;
     };
 
 export type OutboxStored = OutboxEntry & { seq: number };
@@ -88,6 +120,10 @@ interface ShoplistDB extends DBSchema {
     value: HistoryEntry;
     indexes: { by_occurred_at: string; by_rev: number };
   };
+  lists: {
+    key: string;
+    value: List;
+  };
   outbox: {
     key: number; // auto-increment seq == queue order
     value: OutboxStored;
@@ -99,24 +135,37 @@ interface ShoplistDB extends DBSchema {
 }
 
 const DB_NAME = 'shoplist';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbp: Promise<IDBPDatabase<ShoplistDB>> | null = null;
 
 export function initDb(): Promise<IDBPDatabase<ShoplistDB>> {
   if (!dbp) {
     dbp = openDB<ShoplistDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        const items = db.createObjectStore('items', { keyPath: 'id' });
-        items.createIndex('by_rev', 'rev');
-        items.createIndex('by_status', 'status');
+      upgrade(db, oldVersion, _newVersion, tx) {
+        if (oldVersion < 1) {
+          const items = db.createObjectStore('items', { keyPath: 'id' });
+          items.createIndex('by_rev', 'rev');
+          items.createIndex('by_status', 'status');
 
-        const history = db.createObjectStore('history', { keyPath: 'id' });
-        history.createIndex('by_occurred_at', 'occurred_at');
-        history.createIndex('by_rev', 'rev');
+          const history = db.createObjectStore('history', { keyPath: 'id' });
+          history.createIndex('by_occurred_at', 'occurred_at');
+          history.createIndex('by_rev', 'rev');
 
-        db.createObjectStore('outbox', { keyPath: 'seq', autoIncrement: true });
-        db.createObjectStore('state');
+          db.createObjectStore('outbox', { keyPath: 'seq', autoIncrement: true });
+          db.createObjectStore('state');
+        }
+        // T006 — v1→v2: add the `lists` store. Existing local DBs only hold
+        // mirrored subsets (single-list server), so the simplest lossless
+        // migration is to drop the mirrors and resync: clearing `state` resets
+        // the watermark, forcing a full watermark-0 snapshot (lists included).
+        db.createObjectStore('lists', { keyPath: 'id' });
+        if (oldVersion >= 1) {
+          tx.objectStore('items').clear();
+          tx.objectStore('history').clear();
+          tx.objectStore('outbox').clear();
+          tx.objectStore('state').clear();
+        }
       },
     });
   }
@@ -174,6 +223,28 @@ export async function deleteHistory(id: string): Promise<void> {
   await db.delete('history', id);
 }
 
+// ---- lists (T006) ----
+
+export async function getAllLists(): Promise<List[]> {
+  return (await conn()).getAll('lists');
+}
+
+export async function getList(id: string): Promise<List | undefined> {
+  return (await conn()).get('lists', id);
+}
+
+export async function putList(list: List): Promise<void> {
+  const db = await conn();
+  await db.put('lists', list);
+}
+
+export async function putLists(lists: List[]): Promise<void> {
+  const db = await conn();
+  const tx = db.transaction('lists', 'readwrite');
+  for (const list of lists) tx.store.put(list);
+  await tx.done;
+}
+
 // ---- outbox (queue order = seq order; mutations persist BEFORE network) ----
 
 export async function enqueueOutbox(entry: OutboxEntry): Promise<OutboxStored> {
@@ -224,15 +295,22 @@ export async function deleteState(key: string): Promise<void> {
 
 export async function clearStores(): Promise<void> {
   const db = await conn();
-  const tx = db.transaction(['items', 'history', 'outbox', 'state'], 'readwrite');
+  const tx = db.transaction(['items', 'history', 'lists', 'outbox', 'state'], 'readwrite');
   tx.objectStore('items').clear();
   tx.objectStore('history').clear();
+  tx.objectStore('lists').clear();
   tx.objectStore('outbox').clear();
   tx.objectStore('state').clear();
   await tx.done;
 }
 
 export async function resetForTests(): Promise<void> {
+  await deleteDatabaseForTests();
+  await initDb();
+}
+
+/** Closes the module connection and deletes the whole DB (no re-open). */
+export async function deleteDatabaseForTests(): Promise<void> {
   if (dbp) {
     const closed = dbp.then((db) => db.close());
     await closed;
@@ -244,5 +322,4 @@ export async function resetForTests(): Promise<void> {
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('deleteDatabase blocked — leaked connection'));
   });
-  await initDb();
 }

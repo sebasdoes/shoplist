@@ -10,15 +10,30 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 MAX_NAME = 200
 MAX_QUANTITY = 50
 MAX_NOTE = 200
+MAX_LIST_NAME = 100
+# specs/002 data-model: fixed default list uuid seeded by the migration
+DEFAULT_LIST_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def _uuid_or_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        raise ValueError("must be a uuid") from None
+    return value
 
 
 class UpsertItem(BaseModel):
     """Contract mutation item: id required; other fields are an optional field-set
-    (only present fields are applied — per-field LWW, research D2)."""
+    (only present fields are applied — per-field LWW, research D2). v2: every
+    item MUST carry list_id (uuid of a live list)."""
 
     model_config = {"extra": "forbid"}
 
     id: str
+    list_id: str
     name: str | None = None
     quantity: str | None = None
     note: str | None = None
@@ -32,6 +47,12 @@ class UpsertItem(BaseModel):
             uuid.UUID(value)
         except ValueError:
             raise ValueError("id must be a uuid") from None
+        return value
+
+    @field_validator("list_id")
+    @classmethod
+    def _list_uuid(cls, value: str) -> str:
+        _uuid_or_none(value)
         return value
 
     @field_validator("name")
@@ -93,6 +114,7 @@ class TripMutation(BaseModel):
     model_config = {"extra": "forbid"}
 
     id: str
+    list_id: str  # v2: trips are scoped to one list; cross-list decisions → 400
     decisions: list[TripDecision] = Field(default_factory=list)
 
     @field_validator("id")
@@ -107,13 +129,53 @@ class TripMutation(BaseModel):
             raise ValueError("trip id must be a uuid") from None
         return value
 
+    @field_validator("list_id")
+    @classmethod
+    def _list_uuid(cls, value: str) -> str:
+        _uuid_or_none(value)
+        return value
+
+
+class ListPayload(BaseModel):
+    """create_list payload: {id, name} — name trimmed 1–100, NOT unique."""
+
+    model_config = {"extra": "forbid"}
+
+    id: str
+    name: str
+
+    @field_validator("id")
+    @classmethod
+    def _uuid(cls, value: str) -> str:
+        try:
+            uuid.UUID(value)
+        except ValueError:
+            raise ValueError("list id must be a uuid") from None
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _name_valid(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not 1 <= len(trimmed) <= MAX_LIST_NAME:
+            # contracts/api.md: list name required after trim, 1–100 chars
+            raise ValueError("list name required after trim, 1–100 chars")
+        return trimmed
+
 
 class Mutation(BaseModel):
     model_config = {"extra": "forbid", "populate_by_name": True}
 
-    op: Literal["upsert_item", "trip"]
+    op: Literal["upsert_item", "trip", "create_list", "delete_list"]
     item: UpsertItem | None = None
     trip: TripMutation | None = None
+    list: ListPayload | None = None
+    list_id: str | None = None
+
+    @field_validator("list_id")
+    @classmethod
+    def _list_uuid(cls, value: str | None) -> str | None:
+        return _uuid_or_none(value)
 
     @model_validator(mode="after")
     def _payload_matches_op(self) -> "Mutation":
@@ -121,6 +183,10 @@ class Mutation(BaseModel):
             raise ValueError("upsert_item requires item")
         if self.op == "trip" and self.trip is None:
             raise ValueError("trip requires trip")
+        if self.op == "create_list" and self.list is None:
+            raise ValueError("create_list requires list")
+        if self.op == "delete_list" and self.list_id is None:
+            raise ValueError("delete_list requires list_id")
         return self
 
 
@@ -137,6 +203,22 @@ class Applied(BaseModel):
     merged_into: str | None = None
 
 
+class AppliedList(BaseModel):
+    """contracts/api.md v2: applied lists section — {id, name, rev, tombstone}."""
+
+    id: str
+    name: str
+    rev: int
+    tombstone: bool
+
+
+class AppliedGroup(BaseModel):
+    """Push response `applied` gains a `lists` section (T005) alongside items."""
+
+    items: list[Applied] = Field(default_factory=list)
+    lists: list[AppliedList] = Field(default_factory=list)
+
+
 class Readded(BaseModel):
     id: str
     name: str
@@ -149,7 +231,7 @@ class TripResponse(BaseModel):
 
 
 class PushResponse(BaseModel):
-    applied: list[Applied] = Field(default_factory=list)
+    applied: AppliedGroup = Field(default_factory=AppliedGroup)
     trip: TripResponse | None = None
 
 
@@ -160,8 +242,16 @@ class PullRequest(BaseModel):
     include_history: bool = True
 
 
+class ListOut(BaseModel):
+    id: str
+    name: str
+    tombstone: bool
+    rev: int
+
+
 class ItemOut(BaseModel):
     id: str
+    list_id: str
     name: str
     quantity: str | None
     note: str | None
@@ -174,6 +264,7 @@ class ItemOut(BaseModel):
 
 class HistoryOut(BaseModel):
     id: str
+    list_id: str
     item_id: str | None
     name: str
     quantity: str | None
@@ -187,6 +278,7 @@ class HistoryOut(BaseModel):
 
 class PullResponse(BaseModel):
     watermark: int
+    lists: list[ListOut] = Field(default_factory=list)
     items: list[ItemOut] = Field(default_factory=list)
     history: list[HistoryOut] = Field(default_factory=list)
     full_snapshot: bool = False
@@ -195,6 +287,7 @@ class PullResponse(BaseModel):
 def _row_to_item(row: Any) -> ItemOut:
     return ItemOut(
         id=row["id"],
+        list_id=row["list_id"],
         name=row["name"],
         quantity=row["quantity"],
         note=row["note"],
@@ -209,6 +302,7 @@ def _row_to_item(row: Any) -> ItemOut:
 def _row_to_history(row: Any) -> HistoryOut:
     return HistoryOut(
         id=row["id"],
+        list_id=row["list_id"],
         item_id=row["item_id"],
         name=row["name"],
         quantity=row["quantity"],
@@ -217,5 +311,14 @@ def _row_to_history(row: Any) -> HistoryOut:
         staple_snapshot=bool(row["staple_snapshot"]),
         actor=row["actor"],
         occurred_at=row["occurred_at"],
+        rev=row["rev"],
+    )
+
+
+def _row_to_list(row: Any) -> ListOut:
+    return ListOut(
+        id=row["id"],
+        name=row["name"],
+        tombstone=bool(row["tombstone"]),
         rev=row["rev"],
     )

@@ -42,19 +42,19 @@ describe('db (T010)', () => {
     await db.initDb();
     const e1 = await db.enqueueOutbox({
       op: 'upsert_item',
-      item: { id: 'a', name: 'melk' },
+      item: { id: 'a', name: 'melk', list_id: 'list-1' },
       fields: ['name'],
       ts: new Date().toISOString(),
     });
     const e2 = await db.enqueueOutbox({
       op: 'upsert_item',
-      item: { id: 'b', name: 'brood' },
+      item: { id: 'b', name: 'brood', list_id: 'list-1' },
       fields: ['name'],
       ts: new Date().toISOString(),
     });
     const e3 = await db.enqueueOutbox({
       op: 'trip',
-      trip: { id: 't1', decisions: [] },
+      trip: { id: 't1', list_id: 'list-1', decisions: [] },
       ts: new Date().toISOString(),
     });
 
@@ -68,13 +68,13 @@ describe('db (T010)', () => {
     await db.initDb();
     const e1 = await db.enqueueOutbox({
       op: 'upsert_item',
-      item: { id: 'a' },
+      item: { id: 'a', list_id: 'list-1' },
       fields: [],
       ts: new Date().toISOString(),
     });
     await db.enqueueOutbox({
       op: 'upsert_item',
-      item: { id: 'b' },
+      item: { id: 'b', list_id: 'list-1' },
       fields: [],
       ts: new Date().toISOString(),
     });
@@ -88,7 +88,7 @@ describe('db (T010)', () => {
     await db.initDb();
     const e = await db.enqueueOutbox({
       op: 'upsert_item',
-      item: { id: 'old', name: 'melk' },
+      item: { id: 'old', name: 'melk', list_id: 'list-1' },
       fields: ['name'],
       ts: new Date().toISOString(),
     });

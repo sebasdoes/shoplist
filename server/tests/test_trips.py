@@ -2,21 +2,28 @@
 
 import uuid
 
+DEFAULT_LIST = "00000000-0000-4000-8000-000000000001"
+
 
 def push(client, headers, mutations):
     return client.post("/api/v1/sync/push", json={"mutations": mutations}, headers=headers)
 
 
 def item_mut(**overrides):
-    fields = {"id": str(uuid.uuid4()), "name": "koffie", "tombstone": False}
+    fields = {
+        "id": str(uuid.uuid4()),
+        "name": "koffie",
+        "tombstone": False,
+        "list_id": DEFAULT_LIST,
+    }
     fields.update(overrides)
     return {"op": "upsert_item", "item": fields}
 
 
-def trip_mut(decisions, trip_id=None):
+def trip_mut(decisions, trip_id=None, list_id=DEFAULT_LIST):
     return {
         "op": "trip",
-        "trip": {"id": trip_id or str(uuid.uuid4()), "decisions": decisions},
+        "trip": {"id": trip_id or str(uuid.uuid4()), "list_id": list_id, "decisions": decisions},
     }
 
 

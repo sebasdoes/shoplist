@@ -184,6 +184,13 @@ textarea::placeholder {
   color: var(--brand);
 }
 
+/* The header variant is a button (T009 menu toggle) — strip UA chrome. */
+button.brand-logo {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
 .brand-logo svg {
   width: 30px;
   height: 30px;

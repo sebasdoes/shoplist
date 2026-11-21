@@ -13,6 +13,8 @@ export interface ApiItem {
   tombstone: boolean;
   created_by: string;
   rev: number;
+  /** Owning list (schema v2). Present in pull responses from v2 servers. */
+  list_id?: string;
 }
 
 export interface AppliedEntry {
@@ -20,6 +22,11 @@ export interface AppliedEntry {
   rev: number;
   updated_at: string;
   merged_into: string | null;
+}
+
+export interface AppliedGroup {
+  items: AppliedEntry[];
+  lists: AppliedList[];
 }
 
 export interface PushTripResponse {
@@ -30,6 +37,8 @@ export interface PushTripResponse {
 
 export interface PushItemMutation {
   id: string;
+  /** Owning list — required by the v2 contract on every upsert_item. */
+  list_id: string;
   name?: string;
   quantity?: string | null;
   note?: string | null;
@@ -38,12 +47,31 @@ export interface PushItemMutation {
 }
 
 export interface PushMutation {
-  op: 'upsert_item' | 'trip';
+  op: 'upsert_item' | 'trip' | 'create_list' | 'delete_list';
   item?: PushItemMutation;
   trip?: {
     id: string;
+    list_id: string;
     decisions: { item_id: string; outcome: 'bought' | 'kept' | 'not_bought' }[];
   };
+  list?: { id: string; name: string };
+  list_id?: string;
+}
+
+/** A list echoed back by the server in the push response's `lists` section. */
+export interface AppliedList {
+  id: string;
+  name: string;
+  rev: number;
+  tombstone: boolean;
+}
+
+/** A list row in the pull response (contracts/api.md). */
+export interface ApiList {
+  id: string;
+  name: string;
+  tombstone: boolean;
+  rev: number;
 }
 
 export interface PushRequest {
@@ -51,7 +79,7 @@ export interface PushRequest {
 }
 
 export interface PushResponse {
-  applied: AppliedEntry[];
+  applied: AppliedGroup;
   trip?: PushTripResponse;
 }
 
@@ -73,6 +101,7 @@ export interface ApiHistoryEntry {
 
 export interface PullResponse {
   watermark: number;
+  lists?: ApiList[];
   items: ApiItem[];
   history: ApiHistoryEntry[];
 }

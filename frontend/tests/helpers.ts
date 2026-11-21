@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { vi } from 'vitest';
 import * as db from '../src/lib/db';
-import type { Item } from '../src/lib/db';
+import type { Item, List } from '../src/lib/db';
 import {
   activeItems,
   addItem,
@@ -64,11 +64,25 @@ export function seedItem(overrides: Partial<Item> = {}): Item {
     created_at: now,
     updated_at: now,
     rev: overrides.rev ?? 10,
+    list_id: overrides.list_id ?? db.DEFAULT_LIST_ID,
     ticked: overrides.ticked ?? false,
     ticked_at: overrides.ticked_at ?? null,
     local_created_at: overrides.local_created_at ?? now,
     ...overrides,
   } as Item;
+}
+
+/** A live list row shaped as stored in the `lists` IDB store. */
+export function seedList(overrides: Partial<List> = {}): List {
+  const now = new Date().toISOString();
+  return {
+    id: overrides.id ?? crypto.randomUUID(),
+    name: overrides.name ?? 'Boodschappen',
+    created_by: overrides.created_by ?? 'server',
+    created_at: overrides.created_at ?? now,
+    tombstone: overrides.tombstone ?? false,
+    rev: overrides.rev ?? 10,
+  };
 }
 
 export function apiItemOf(item: Item) {
@@ -82,6 +96,7 @@ export function apiItemOf(item: Item) {
     tombstone: item.tombstone,
     created_by: item.created_by,
     rev: item.rev,
+    list_id: item.list_id,
   };
 }
 

@@ -3,12 +3,13 @@
 //   handle merged_into, clear pushed); 3. pull with watermark; 4. triggers:
 //   online, focus, 60 s visible timer, debounced 2 s post-mutation;
 //   5. failure never throws to the UI — outbox retained + quiet chip (FR-014).
-import { apiPull, apiPush, type ApiItem } from './api';
+import { apiPull, apiPush, type ApiItem, type AppliedEntry, type AppliedList } from './api';
 import * as db from './db';
 import type { Item, OutboxStored } from './db';
 import { config } from './config';
 import * as oidc from './oidc';
 import { nameKey } from './validate';
+import { reconcileActiveList } from './active-list';
 import {
   flushHistoryDeletes,
   reconcileHistoryFromServer,
@@ -78,18 +79,55 @@ async function flushOutbox(): Promise<void> {
   if (entries.length === 0) return;
 
   const res = await apiPush({
-    mutations: entries.map((e) =>
-      e.op === 'upsert_item' ? { op: 'upsert_item', item: e.item } : { op: 'trip', trip: e.trip },
-    ),
+    mutations: entries.map((e) => {
+      if (e.op === 'upsert_item') return { op: 'upsert_item', item: e.item };
+      if (e.op === 'trip') return { op: 'trip', trip: e.trip };
+      if (e.op === 'create_list') return { op: 'create_list', list: e.list };
+      return { op: 'delete_list', list_id: e.list_id };
+    }),
   });
 
-  const appliedById = new Map(res.applied.map((a) => [a.id, a]));
+  // T011 — the push response may carry a `lists` section alongside `applied`
+  // (`applied` gains `lists` per contracts/api.md). Adopt server revs/tombstones.
+  const appliedLists = extractAppliedLists(res);
+  const appliedListIds = new Set((appliedLists ?? []).map((l) => l.id));
+  for (const al of appliedLists ?? []) {
+    const existing = await db.getList(al.id);
+    await db.putList({
+      id: al.id,
+      name: al.name,
+      rev: al.rev,
+      tombstone: al.tombstone,
+      created_by: existing?.created_by ?? null,
+      created_at: existing?.created_at ?? '',
+    });
+  }
+
+  // Applied group canonical shape (server): { items: [...], lists: [...] }.
+  // Tolerate the legacy bare-array shape defensively — never crash the outbox.
+  const appliedItems: AppliedEntry[] = Array.isArray(res.applied)
+    ? (res.applied as unknown as AppliedEntry[])
+    : (res.applied?.items ?? []);
+  const appliedById = new Map(appliedItems.map((a) => [a.id, a]));
   const seqsDone: number[] = [];
 
   for (const entry of entries) {
     if (entry.op === 'trip') {
       // Duplicate trip id → {"duplicate": true}, no effects: clear from outbox.
       seqsDone.push(entry.seq);
+      continue;
+    }
+    if (entry.op === 'create_list') {
+      // confirmed when the response echoes the list (best-effort if absent)
+      if (appliedLists === undefined || appliedListIds.has(entry.list.id)) {
+        seqsDone.push(entry.seq);
+      }
+      continue;
+    }
+    if (entry.op === 'delete_list') {
+      if (appliedLists === undefined || appliedListIds.has(entry.list_id)) {
+        seqsDone.push(entry.seq);
+      }
       continue;
     }
     const applied = appliedById.get(entry.item.id);
@@ -104,6 +142,17 @@ async function flushOutbox(): Promise<void> {
   }
 
   await db.deleteOutboxSeqs(seqsDone);
+  if (appliedLists && appliedLists.length > 0) await reconcileActiveList();
+}
+
+/** The `lists` section of the push response: `undefined` when the server sent
+ * none (then list ops confirm best-effort), `[]` when explicitly empty. */
+function extractAppliedLists(res: {
+  applied?: { lists?: AppliedList[] };
+}): AppliedList[] | undefined {
+  const nested = (res as { applied?: { lists?: AppliedList[] } }).applied?.lists;
+  if (Array.isArray(nested)) return nested;
+  return undefined;
 }
 
 /** merged_into adoption: local row is re-keyed onto the server survivor; queued
@@ -142,6 +191,7 @@ function apiItemToLocal(row: ApiItem, existing?: Item): Item {
     created_at: existing?.created_at ?? '',
     updated_at: existing?.updated_at ?? '',
     rev: row.rev,
+    list_id: row.list_id ?? existing?.list_id ?? db.DEFAULT_LIST_ID,
     ticked: existing?.ticked ?? false,
     ticked_at: existing?.ticked_at ?? null,
     local_created_at: existing?.local_created_at ?? now,
@@ -174,6 +224,21 @@ export async function pullChanges(): Promise<void> {
   const watermark = (await db.getState<number>('watermark')) ?? 0;
   const res = await apiPull({ watermark, include_history: true });
 
+  // T011 — the pull applies `lists` into the lists store FIRST (a watermark-0
+  // snapshot includes ALL lists, tombstoned ones too, so devices can retire
+  // their active selection). The watermark mechanism itself is unchanged.
+  for (const l of res.lists ?? []) {
+    const existing = await db.getList(l.id);
+    await db.putList({
+      id: l.id,
+      name: l.name,
+      rev: l.rev,
+      tombstone: l.tombstone,
+      created_by: existing?.created_by ?? null,
+      created_at: existing?.created_at ?? '',
+    });
+  }
+
   const pending = await db.getOutbox();
   const pendingById = new Map<string, UpsertEntry[]>();
   const tripItemIds = new Set<string>();
@@ -182,9 +247,10 @@ export async function pullChanges(): Promise<void> {
       const list = pendingById.get(e.item.id) ?? [];
       list.push(e as UpsertEntry);
       pendingById.set(e.item.id, list);
-    } else {
+    } else if (e.op === 'trip') {
       for (const d of e.trip.decisions) tripItemIds.add(d.item_id);
     }
+    // create_list / delete_list entries carry no item rows to protect
   }
 
   const pendingDeletes = await getPendingDeletes();
@@ -215,6 +281,10 @@ export async function pullChanges(): Promise<void> {
   }
 
   await db.setState('watermark', res.watermark);
+
+  // FR-020 — when the stored selection is tombstoned or missing, fall back to
+  // the first live list and persist that fallback.
+  await reconcileActiveList();
 }
 
 // ---- triggers ----

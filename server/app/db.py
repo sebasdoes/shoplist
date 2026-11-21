@@ -1,4 +1,10 @@
-"""T008 — SQLite (WAL) helpers, schema v1 migration runner, global rev sequence."""
+"""T002 — SQLite (WAL) helpers, schema v1→v2 migration runner, global rev sequence.
+
+Schema v2 (specs/002 data-model.md): adds `lists`, seeds the default list
+`Boodschappen` (fixed uuid), backfills items/trips/history `list_id`, and
+swaps the partial unique index to (list_id, name_key). Gated by
+PRAGMA user_version; idempotent; the rev sequence is untouched.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+DEFAULT_LIST_ID = "00000000-0000-4000-8000-000000000001"
+DEFAULT_LIST_NAME = "Boodschappen"
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS items (
@@ -62,6 +71,38 @@ CREATE TABLE IF NOT EXISTS sync_meta (
 INSERT OR IGNORE INTO sync_meta(key, value) VALUES ('rev', 0);
 """
 
+_SCHEMA_V2_ADDITIONS = """
+CREATE TABLE IF NOT EXISTS lists (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    tombstone INTEGER NOT NULL DEFAULT 0,
+    rev INTEGER NOT NULL
+);
+"""
+
+_MIGRATE_V1_TO_V2_STATEMENTS = (
+    f"ALTER TABLE items ADD COLUMN list_id TEXT NOT NULL DEFAULT '{DEFAULT_LIST_ID}'",
+    "DROP INDEX IF EXISTS idx_items_active_name_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_items_active_list_name_key "
+    "ON items(list_id, name_key) WHERE status = 'active' AND tombstone = 0",
+    f"ALTER TABLE trips ADD COLUMN list_id TEXT NOT NULL DEFAULT '{DEFAULT_LIST_ID}'",
+    f"ALTER TABLE history ADD COLUMN list_id TEXT NOT NULL DEFAULT '{DEFAULT_LIST_ID}'",
+    # The seeded list needs a rev above every existing data rev, otherwise
+    # devices whose watermark is already at the v1 max would never pull it.
+    "UPDATE sync_meta SET value = max(COALESCE(value, 0), "
+    "COALESCE((SELECT MAX(rev) FROM items), 0), COALESCE((SELECT MAX(rev) FROM trips), 0), "
+    "COALESCE((SELECT MAX(rev) FROM history), 0)) WHERE key = 'rev'",
+)
+
+# Full v2 DDL for fresh installs: v1 tables + list_id columns + lists.
+_SCHEMA_V2 = (
+    _SCHEMA_V1
+    + _SCHEMA_V2_ADDITIONS
+    + "\n".join(statement + ";" for statement in _MIGRATE_V1_TO_V2_STATEMENTS)
+)
+
 
 def stamp() -> str:
     """Server-stamped ISO-8601 UTC timestamp (client clocks are not trusted)."""
@@ -86,22 +127,53 @@ def connect(path: str) -> sqlite3.Connection:
     return conn
 
 
+def _run_script(conn: sqlite3.Connection, script: str) -> None:
+    """Execute a DDL script statement-by-statement (keeps the open transaction)."""
+    for statement in script.strip().split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+def _seed_default_list(conn: sqlite3.Connection) -> None:
+    """Seed Boodschappen with the fixed uuid; rev comes off the global sequence so
+    devices that pulled earlier receive it in their watermark delta."""
+    conn.execute(
+        "INSERT OR IGNORE INTO lists (id, name, created_by, created_at, tombstone, rev) "
+        "VALUES (?, ?, NULL, ?, 0, ?)",
+        (DEFAULT_LIST_ID, DEFAULT_LIST_NAME, stamp(), next_rev(conn)),
+    )
+
+
+def _current_schema_version(conn: sqlite3.Connection) -> int:
+    """user_version is the gate; schema_migrations covers pre-v2 databases that
+    never recorded a user_version (v1 shipped with user_version=0)."""
+    uv = conn.execute("PRAGMA user_version").fetchone()[0]
+    row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    return max(uv, row[0] or 0)
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
         "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
     )
-    row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
-    current = row[0] or 0
+    current = _current_schema_version(conn)
     if current >= SCHEMA_VERSION:
         return
     conn.execute("BEGIN IMMEDIATE")
     try:
-        for statement in _SCHEMA_V1.strip().split(";"):
-            if statement.strip():
+        if current == 0:
+            # Fresh install: build the full v2 schema directly, then seed.
+            _run_script(conn, _SCHEMA_V2)
+        else:
+            # v1 → v2 one-shot migration, backfills default to the seeded list.
+            _run_script(conn, _SCHEMA_V2_ADDITIONS)
+            for statement in _MIGRATE_V1_TO_V2_STATEMENTS:
                 conn.execute(statement)
+        _seed_default_list(conn)
+        conn.execute("PRAGMA user_version = 2")
         conn.execute(
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (SCHEMA_VERSION, stamp()),
         )
     except BaseException:
