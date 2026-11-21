@@ -71,8 +71,12 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
-    padding: 0 1rem;
+    padding: 0.75rem 1rem 0.4rem;
     align-items: center;
+    /* keep the pill clear of the sticky header — its top border was clipped */
+    margin-top: 0;
+    position: relative;
+    z-index: 1;
   }
   .add-bar .name {
     flex: 1;
