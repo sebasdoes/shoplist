@@ -422,8 +422,6 @@ def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> Push
     conn.execute("BEGIN IMMEDIATE")
     try:
         db.upsert_user(conn, user.subject, user.name)
-        import json as _json
-        print("[push-body] " + _json.dumps(request.model_dump())[:900], flush=True)
         rejected: list[RejectedMutation] = []
         for index, mutation in enumerate(request.mutations):
             # Per-mutation isolation (feature-004 fix): one poison mutation (e.g.
