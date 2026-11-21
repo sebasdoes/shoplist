@@ -64,3 +64,14 @@ def auth(rsa):
         return {"Authorization": f"Bearer {token}"}
 
     return _auth
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_db(tmp_path, monkeypatch):
+    """Every test runs against a throwaway DB.
+
+    The app's default DB path is /data/shoplist.db; without this override a
+    root shell happily mkdirs /data (masking the issue locally) while CI —
+    where the runner cannot write / — fails the whole suite.
+    """
+    monkeypatch.setenv("SHOPLIST_DB", str(tmp_path / "test.db"))
