@@ -9,8 +9,6 @@ and is idempotent. Fresh installs build the v2 schema directly.
 import sqlite3
 import uuid
 
-import pytest
-
 from app import db
 
 DEFAULT_LIST_ID = "00000000-0000-4000-8000-000000000001"
@@ -110,7 +108,8 @@ def test_migrates_v1_db(tmp_path):
     assert seed["rev"] >= 1  # pullable by existing devices via the watermark delta
     assert seed["rev"] > 5  # above the v1 max data rev, or migrated devices never pull it
 
-    # unique index swapped: partial (list_id, name_key) on active+live rows
+    # unique index on (list_id, name_key) was created in v2 but DROPPED by the
+    # v5 migration (constitution v1.3.0: duplicates allowed, no uniqueness)
     indexes = {
         r["name"]: r["sql"]
         for r in conn.execute(
@@ -118,10 +117,9 @@ def test_migrates_v1_db(tmp_path):
         ).fetchall()
     }
     assert "idx_items_active_name_key" not in indexes
-    assert "idx_items_active_list_name_key" in indexes
-    assert "list_id" in indexes["idx_items_active_list_name_key"]
+    assert "idx_items_active_list_name_key" not in indexes
 
-    # per-list uniqueness probe: same name_key in two different live lists is allowed
+    # duplicates probe (v1.3.0): same name_key twice in ONE list is allowed
     other_list = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO lists (id, name, created_by, created_at, tombstone, rev) "
@@ -131,11 +129,10 @@ def test_migrates_v1_db(tmp_path):
     conn.commit()
     insert_item(conn, "66666666-6666-4666-8666-666666666666", other_list, "melk")
     conn.commit()
-    with pytest.raises(sqlite3.IntegrityError):
-        insert_item(
-            conn, "77777777-7777-4777-8777-777777777777", other_list, "melk", name="MELK", rev=101
-        )
-    conn.rollback()
+    insert_item(  # same-normalized name, same list — both rows insert fine
+        conn, "77777777-7777-4777-8777-777777777777", other_list, "melk", name="MELK", rev=101
+    )
+    conn.commit()
 
     # rev sequence is monotonic: migration only advanced it (seed), never reset
     rev = conn.execute("SELECT value FROM sync_meta WHERE key = 'rev'").fetchone()[0]

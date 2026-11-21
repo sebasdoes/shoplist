@@ -87,26 +87,33 @@ def test_same_field_lww_last_write_wins(client, auth):
     assert row["quantity"] == "3x"
 
 
-def test_auto_dedupe_normalized_name_key(client, auth):
-    """research D6: casefold + trim + collapse whitespace + NFKD diacritic strip."""
+def test_duplicates_allowed_normalized_name_key(client, auth):
+    """Constitution v1.3.0: auto-dedupe REMOVED — two same-normalized names on
+    one list are independent rows (name_key kept for grouping, no unique index).
+    casefold + trim + collapse whitespace + NFKD diacritic strip stays for
+    keying, but no longer folds rows."""
     headers = auth()
     first = str(uuid.uuid4())
     r = push(
         client, headers, [item_mut(id=first, name="Café au Lait", quantity="2x", note="morgen")]
     )
     assert r.status_code == 200
+    assert r.json()["applied"]["items"][0]["merged_into"] is None
 
     second = str(uuid.uuid4())
     r = push(client, headers, [item_mut(id=second, name="cafe   au lait", note="avond")])
     assert r.status_code == 200
-    applied = r.json()["applied"]["items"][0]
-    assert applied["merged_into"] == first
+    applied = r.json()["applied"]["items"]
+    assert len(applied) == 1  # exactly the pushed row — no survivor echo
+    assert applied[0]["id"] == second
+    assert applied[0]["merged_into"] is None
 
     data = active_items(client, headers, 0)
     actives = [x for x in data["items"] if x["tombstone"] == 0]
-    assert [x["id"] for x in actives] == [first]
-    survivor = actives[0]
-    assert survivor["name"] == "Café au Lait"
+    by_id = {x["id"]: x for x in actives}
+    assert set(by_id) == {first, second}  # both rows live, both in pull
+    assert by_id[first]["name"] == "Café au Lait"
+    assert by_id[second]["name"] == "cafe   au lait"  # each keeps its display form
 
 
 def test_tombstone_wins_over_same_epoch_edit(client, auth):

@@ -208,6 +208,9 @@ class PushRequest(BaseModel):
 
 
 class Applied(BaseModel):
+    """Push echo per applied item row. v1.3.0: merged_into is always None
+    (kept for wire compatibility with older clients — no merge/survivor)."""
+
     id: str
     rev: int
     updated_at: str

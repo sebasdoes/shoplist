@@ -368,7 +368,8 @@ def test_staple_readd_enters_at_top(client, auth):
 
 
 def test_existing_upserts_keep_position(client, auth):
-    """Field edits and dedupe merges never move an item."""
+    """Field edits never move an item; a duplicate name is an INDEPENDENT row
+    that leaves the existing row's position and rev untouched (v1.3.0)."""
     headers = auth()
     a, b, c = make_items(client, headers)
     push(client, headers, [reorder_mut(DEFAULT_LIST, [a, b, c])])
@@ -378,12 +379,13 @@ def test_existing_upserts_keep_position(client, auth):
     push(client, headers, [item_mut(id=b, name="brood", quantity="2x")])
     rows = items_by_id(client, headers)
     assert rows[b]["sort_order"] == before[b]["sort_order"]
+    after_edit = rows
 
-    # dedupe merge: pushing a new id with the same name folds onto the survivor
+    # duplicate name: no merge (v1.3.0) — the pushed id is its own new row
     dupe = str(uuid.uuid4())
     r = push(client, headers, [item_mut(id=dupe, name="BROOD")])
     assert r.status_code == 200
-    assert r.json()["applied"]["items"][0]["merged_into"] == b
+    assert r.json()["applied"]["items"][0]["merged_into"] is None
     rows = items_by_id(client, headers)
     assert rows[b]["sort_order"] == before[b]["sort_order"]
-    # the merged row got a rev bump (field application), position unchanged
+    assert rows[b]["rev"] == after_edit[b]["rev"]  # existing row untouched by the dupe push

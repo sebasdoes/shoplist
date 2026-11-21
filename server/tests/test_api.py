@@ -85,14 +85,26 @@ def test_pull_response_shape(client, auth):
     assert body["items"][0]["tombstone"] is False or body["items"][0]["tombstone"] == 0
 
 
-def test_push_merged_into_response(client, auth):
+def test_push_merged_into_always_none(client, auth):
+    """Constitution v1.3.0: pushes never fold onto a survivor — one Applied (the
+    pushed row), merged_into always None, both same-name rows stay live."""
     headers = auth()
     survivor = str(uuid.uuid4())
     push(client, headers, [item_mut(id=survivor, name="koffie")])
     dupe = str(uuid.uuid4())
     resp = push(client, headers, [item_mut(id=dupe, name="KOFFIE")])
     assert resp.status_code == 200
-    assert resp.json()["applied"]["items"][0]["merged_into"] == survivor
+    applied = resp.json()["applied"]["items"]
+    assert len(applied) == 1
+    assert applied[0]["id"] == dupe
+    assert applied[0]["merged_into"] is None
+
+    resp = client.post(
+        "/api/v1/sync/pull", json={"watermark": 0, "include_history": False}, headers=headers
+    )
+    rows = {x["id"]: x for x in resp.json()["items"]}
+    assert rows[survivor]["tombstone"] == 0  # the existing row is untouched
+    assert rows[dupe]["tombstone"] == 0  # and the duplicate stays live
 
 
 def test_401_without_token(client):

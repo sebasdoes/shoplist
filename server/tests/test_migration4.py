@@ -87,8 +87,9 @@ def test_migrates_v3_db_adds_item_sort_order(tmp_path):
     conn.row_factory = sqlite3.Row
 
     assert "sort_order" in item_columns(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
-    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    migrated = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+    assert migrated == db.SCHEMA_VERSION
 
     # sequential backfill over the ACTIVE, live items of each list, newest
     # first (created_at DESC, rev DESC — matches the current display order)
@@ -144,7 +145,7 @@ def test_migration4_is_idempotent(tmp_path):
     db.migrate(conn)
     conn.commit()
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     after = [tuple(r) for r in conn.execute("SELECT * FROM items ORDER BY id").fetchall()]
     assert after == before  # duplicate ALTER would have raised; revs not re-bumped
     meta_after = conn.execute("SELECT value FROM sync_meta WHERE key = 'rev'").fetchone()[0]
@@ -158,8 +159,9 @@ def test_fresh_install_gains_item_sort_order_directly(tmp_path):
     conn.row_factory = sqlite3.Row
 
     assert "sort_order" in item_columns(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
-    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    migrated = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+    assert migrated == db.SCHEMA_VERSION
     # the seeded default list exists; lists still carry their v3 sort_order
     seed = conn.execute("SELECT name FROM lists WHERE id = ?", (DEFAULT_LIST_ID,)).fetchone()
     assert seed["name"] == "Boodschappen"
@@ -177,7 +179,7 @@ def test_v2_db_migrates_straight_to_v4(tmp_path):
     conn = db.connect(path)
     conn.row_factory = sqlite3.Row
 
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     assert "sort_order" in item_columns(conn)
     # make_v2_db inserts no items, so the items backfill is a no-op;
     # the v3 list backfill still ran (Boodschappen + A + B + C sequential)

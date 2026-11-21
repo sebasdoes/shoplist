@@ -256,37 +256,37 @@ def test_item_without_list_id_422(client, auth):
     assert push(client, auth(), [mut]).status_code == 422
 
 
-# --- per-list dedupe merge ----------------------------------------------------
+# --- duplicates allowed (constitution v1.3.0: no dedupe merge) ------------------
 
 
-def test_dedupe_merge_scoped_to_list(client, auth):
+def test_duplicates_same_name_across_lists_and_within_one(client, auth):
+    """Constitution v1.3.0: same name on different lists is independent
+    (unchanged), AND the same name is now allowed twice on ONE list."""
     headers = auth()
     make_list(client, headers)
-    in_default, in_a = str(uuid.uuid4()), str(uuid.uuid4())
+    in_default, in_a, in_a2 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
     r = push(
         client,
         headers,
         [
             item_mut(id=in_default, name="koffie"),
             item_mut(id=in_a, list_id=LIST_A, name="koffie"),
+            item_mut(id=in_a2, list_id=LIST_A, name="KOFFIE"),
         ],
     )
     assert r.status_code == 200
     assert r.json()["applied"]["lists"] == []
-
-    dupe = str(uuid.uuid4())
-    r = push(client, headers, [item_mut(id=dupe, list_id=LIST_A, name="KOFFIE")])
-    assert r.status_code == 200
-    applied = r.json()["applied"]["items"][0]
-    assert applied["merged_into"] == in_a  # folds onto the SAME list's survivor
+    applied = r.json()["applied"]["items"]
+    assert len(applied) == 3  # one Applied per pushed row, no survivor echo
+    assert {a["id"] for a in applied} == {in_default, in_a, in_a2}
+    assert all(a["merged_into"] is None for a in applied)
 
     rows = items_by_id(pull(client, headers))
-    assert rows[in_default]["tombstone"] == 0  # untouched cross-list
-    assert rows[in_a]["tombstone"] == 0
-    # contract update: the pushed dupe is now recorded as a TOMBSTONED row
-    # (fold propagates to other devices + the client can confirm by its id);
-    # it must NOT be live.
-    assert rows[dupe]["tombstone"] == 1
+    assert rows[in_default]["tombstone"] == 0  # cross-list row untouched
+    assert rows[in_a]["tombstone"] == 0  # keeps its display form
+    assert rows[in_a2]["tombstone"] == 0  # BOTH live on list A — duplicates allowed
+    assert rows[in_a]["name"] == "koffie"
+    assert rows[in_a2]["name"] == "KOFFIE"
 
 
 # --- trip scoping ---------------------------------------------------------------

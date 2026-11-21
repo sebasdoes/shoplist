@@ -1,4 +1,8 @@
-"""T018 — push (per-field LWW, dedupe merge, tombstones) and pull (watermark, snapshot flag)."""
+"""T018 — push (per-field LWW, tombstones) and pull (watermark, snapshot flag).
+
+Constitution v1.3.0: auto-dedupe of identical names is REMOVED — pushes never
+fold onto a survivor, every upsert echoes exactly ONE Applied row.
+"""
 
 from __future__ import annotations
 
@@ -66,23 +70,13 @@ def _fetch_row(conn: sqlite3.Connection, item_id: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
 
 
-def _find_active_by_name_key(
-    conn: sqlite3.Connection, key: str, list_id: str, exclude_id: str | None = None
-) -> sqlite3.Row | None:
-    """v2: dedupe merge is scoped to (list_id, name_key) among active+live rows."""
-    if not key:
-        return None
-    row = conn.execute(
-        "SELECT * FROM items WHERE name_key = ? AND list_id = ? AND status = 'active'"
-        " AND tombstone = 0 AND id != ?",
-        (key, list_id, exclude_id or ""),
-    ).fetchone()
-    return row
-
-
-def _fetch_applied(row: sqlite3.Row, merged_into: str | None) -> Applied:
+def _fetch_applied(row: sqlite3.Row) -> Applied:
+    """Echo the row itself. v1.3.0: merged_into is ALWAYS None (wire compat)."""
     return Applied(
-        id=row["id"], rev=row["rev"], updated_at=row["updated_at"], merged_into=merged_into
+        id=row["id"],
+        rev=row["rev"],
+        updated_at=row["updated_at"],
+        merged_into=None,
     )
 
 
@@ -102,9 +96,10 @@ def top_insert_sort_order(conn: sqlite3.Connection, list_id: str) -> int:
 def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> list[Applied]:
     """Apply one pushed item mutation (in-order, inside the push transaction).
 
-    Dedupe merges return TWO applied rows: the retired row keyed by the
-    CLIENT's submitted id (merged_into -> survivor, so the submitting device
-    can confirm) plus the survivor row (fresh rev)."""
+    Constitution v1.3.0: NO dedupe, NO merge, NO survivor — a pushed id is
+    its own row (same-normalized names coexist on one list). Tombstone
+    precedence is kept: a tombstoned row never resurrects. Exactly ONE
+    Applied is returned: the row itself (merged_into stays None)."""
     require_live_list(conn, item.list_id)  # unknown/tombstoned → 400, batch rolls back
     fields = item.provided_fields()
     existing = _fetch_row(conn, item.id)
@@ -112,82 +107,14 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
     if existing is not None:
         if existing["tombstone"]:
             # Tombstone precedence: a deleted row never resurrects; concurrent edits lose.
-            return [_fetch_applied(existing, None)]
+            return [_fetch_applied(existing)]
+        # Plain per-field LWW apply (name included — no fold, no skip).
+        _apply_fields(conn, item_id=item.id, fields=fields, item=item, user=user)
+        return [_fetch_applied(_fetch_row(conn, item.id))]
 
-        is_delete = "tombstone" in fields and item.tombstone is True
-        new_key = name_key(item.name) if "name" in fields else None
-        survivor = (
-            None
-            if is_delete or new_key is None
-            else _find_active_by_name_key(conn, new_key, item.list_id, item.id)
-        )
-
-        now = db.stamp()
-
-        # Dedupe hit: fold the pushed fields onto the existing active row.
-        if survivor is not None:
-            _apply_fields(
-                conn,
-                item_id=survivor["id"],
-                fields=fields,
-                item=item,
-                user=user,
-                skip_name=True,  # the survivor keeps its display form; identity is the name_key
-            )
-            # Retire the pushed row so the fold propagates to other devices.
-            retired_rev = db.next_rev(conn)
-            conn.execute(
-                "UPDATE items SET tombstone = 1, updated_at = ?, rev = ? WHERE id = ?",
-                (now, retired_rev, item.id),
-            )
-            # Echo BOTH rows: the retired row keyed by the CLIENT's submitted id
-            # (with merged_into -> survivor) is how the submitting device can
-            # even FIND its merge confirmation — without it the client re-pushes
-            # forever (seen live: an 'AVG' add echoing only the survivor never
-            # confirmed and retried every 2 s, inflating revs each pass).
-            retired_row = _fetch_row(conn, item.id)
-            survivor_row = _fetch_row(conn, survivor["id"])
-            applied_merge = [_fetch_applied(retired_row, survivor["id"])]
-            if survivor_row["id"] != retired_row["id"]:
-                applied_merge.append(_fetch_applied(survivor_row, None))
-            return applied_merge
-
-        _apply_fields(conn, item_id=item.id, fields=fields, item=item, user=user, skip_name=False)
-        return [_fetch_applied(_fetch_row(conn, item.id), None)]
-
-    # New row from the server's perspective.
+    # New row from the server's perspective — always a plain insert.
     is_delete = "tombstone" in fields and item.tombstone is True
-    if "name" in fields:
-        key = name_key(item.name)
-        survivor = _find_active_by_name_key(conn, key, item.list_id)
-        if survivor is not None:
-            _apply_fields(
-                conn,
-                item_id=survivor["id"],
-                fields=fields,
-                item=item,
-                user=user,
-                skip_name=True,
-            )
-            # The client-submitted id has no server row yet — create the tombstone
-            # so (a) the echo can be KEYED to the submitted id (client confirm) and
-            # (b) the fold propagates to other devices.
-            tomb_rev = db.next_rev(conn)
-            stamp = db.stamp()
-            conn.execute(
-                "INSERT INTO items (id, name, name_key, quantity, note, status, staple, "
-                "created_by, created_at, updated_at, rev, tombstone, list_id) VALUES "
-                "(?, ?, ?, NULL, NULL, 'active', 0, ?, ?, ?, ?, 1, ?)",
-                (item.id, item.name, name_key(item.name), user.subject, stamp,
-                 stamp, tomb_rev, item.list_id),
-            )
-            retired_row = _fetch_row(conn, item.id)
-            survivor_row = _fetch_row(conn, survivor["id"])
-            applied_merge = [_fetch_applied(retired_row, survivor["id"])]
-            if survivor_row["id"] != retired_row["id"]:
-                applied_merge.append(_fetch_applied(survivor_row, None))
-            return applied_merge
-    elif not is_delete:
+    if "name" not in fields and not is_delete:
         raise SyncError("name required after trim, 1–200 chars", 422)
 
     rev = db.next_rev(conn)
@@ -217,7 +144,7 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
             sort_order,
         ),
     )
-    return [_fetch_applied(_fetch_row(conn, item.id), None)]
+    return [_fetch_applied(_fetch_row(conn, item.id))]
 
 
 def _apply_fields(
@@ -227,7 +154,6 @@ def _apply_fields(
     fields: set[str],
     item: UpsertItem,
     user: AuthUser,
-    skip_name: bool,
 ) -> None:
     """Per-field LWW: only fields present in the pushed field-set are written."""
     assignments: list[str] = []
@@ -236,8 +162,6 @@ def _apply_fields(
         if field not in fields:
             continue
         if field == "name":
-            if skip_name:
-                continue
             assignments.append("name_key = ?")
             params.append(name_key(item.name or ""))
         value: object
@@ -411,7 +335,7 @@ def apply_reorder_items(
         conn.execute(
             "UPDATE items SET sort_order = ?, rev = ? WHERE id = ?", (index, rev, item_id)
         )
-        applied.append(_fetch_applied(_fetch_row(conn, item_id), None))
+        applied.append(_fetch_applied(_fetch_row(conn, item_id)))
     return applied
 
 

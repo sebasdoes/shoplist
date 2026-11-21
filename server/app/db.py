@@ -15,6 +15,11 @@ ACTIVE, live items of each list by (created_at DESC, rev DESC) — newest
 first, matching the current display. sync_meta is lifted above the max
 data rev BEFORE the backfilled rows' rev bumps (the v2/v3 lesson), so
 devices already past the watermark still receive the order.
+
+Schema v5 (constitution v1.3.0 "duplicates allowed per list"): drops the
+partial unique index `idx_items_active_list_name_key` on (list_id,
+name_key). No data changes and no backfill; the `name_key` column stays
+(harmless, still used for grouping); idempotent via DROP INDEX IF EXISTS.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 DEFAULT_LIST_ID = "00000000-0000-4000-8000-000000000001"
 DEFAULT_LIST_NAME = "Boodschappen"
@@ -130,6 +135,15 @@ _V4_ADD_ITEM_SORT_ORDER = "ALTER TABLE items ADD COLUMN sort_order INTEGER NOT N
 # Full v4 DDL for fresh installs: v3 schema + items.sort_order directly (no ALTER).
 _SCHEMA_V4 = _SCHEMA_V3 + _V4_ADD_ITEM_SORT_ORDER + ";"
 
+# v5: the name-dedupe unique index (added v1, widened to (list_id, name_key) in
+# v2) is dropped — same-normalized names coexist on one list (constitution
+# v1.3.0). The existing v1→v2 statements still create it (historical path);
+# the runner drops it AFTER them, so every path ends without the index.
+_V5_DROP_NAME_KEY_INDEX = "DROP INDEX IF EXISTS idx_items_active_list_name_key"
+
+# Full v5 DDL for fresh installs: v4 schema, never with the dedupe index.
+_SCHEMA_V5 = _SCHEMA_V4 + _V5_DROP_NAME_KEY_INDEX + ";"
+
 
 def _max_data_rev(conn: sqlite3.Connection) -> int:
     """MAX(rev) over all data tables (the watermark floor new revs must clear)."""
@@ -202,8 +216,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         if current == 0:
-            # Fresh install: build the full v4 schema directly, then seed.
-            _run_script(conn, _SCHEMA_V4)
+            # Fresh install: build the full v5 schema directly (never with the
+            # dedupe index), then seed.
+            _run_script(conn, _SCHEMA_V5)
         else:
             if current == 1:
                 # v1 → v2 one-shot migration, backfills default to the seeded list.
@@ -236,34 +251,40 @@ def migrate(conn: sqlite3.Connection) -> None:
                     )
             # v2/v3 → v4 (also reached straight from v1/v2 in the same transaction):
             # items gain a per-list display position for the ACTIVE queue.
-            conn.execute(_V4_ADD_ITEM_SORT_ORDER)
-            # Lift sync_meta above any seeded data revs FIRST (same lesson as
-            # v2/v3): otherwise devices already past these revs never see the
-            # new sort_order via delta pulls.
-            floor = _max_data_rev(conn)
-            if floor > 0:
-                conn.execute(
-                    "UPDATE sync_meta SET value = MAX(value, ?) WHERE key = 'rev'", (floor,)
-                )
-            # Backfill the ACTIVE, live queue of each list sequentially,
-            # newest first (created_at DESC, rev DESC) — matching the current
-            # display order. Ticked and tombstoned rows keep the default 0.
-            for list_row in conn.execute("SELECT id FROM lists").fetchall():
-                item_rows = conn.execute(
-                    "SELECT id FROM items WHERE list_id = ? AND status = 'active'"
-                    " AND tombstone = 0 ORDER BY created_at DESC, rev DESC",
-                    (list_row["id"],),
-                ).fetchall()
-                for index, item_row in enumerate(item_rows):
-                    # bump: devices past this watermark must receive the
-                    # backfilled order via delta pull
-                    rev = next_rev(conn)
+            # Gated at v4 (v5 addition): a database already AT v4 must not
+            # re-run the v4 ALTER/backfill when migrating on to v5.
+            if current < 4:
+                conn.execute(_V4_ADD_ITEM_SORT_ORDER)
+                # Lift sync_meta above any seeded data revs FIRST (same lesson as
+                # v2/v3): otherwise devices already past these revs never see the
+                # new sort_order via delta pulls.
+                floor = _max_data_rev(conn)
+                if floor > 0:
                     conn.execute(
-                        "UPDATE items SET sort_order = ?, rev = ? WHERE id = ?",
-                        (index, rev, item_row["id"]),
+                        "UPDATE sync_meta SET value = MAX(value, ?) WHERE key = 'rev'", (floor,)
                     )
+                # Backfill the ACTIVE, live queue of each list sequentially,
+                # newest first (created_at DESC, rev DESC) — matching the current
+                # display order. Ticked and tombstoned rows keep the default 0.
+                for list_row in conn.execute("SELECT id FROM lists").fetchall():
+                    item_rows = conn.execute(
+                        "SELECT id FROM items WHERE list_id = ? AND status = 'active'"
+                        " AND tombstone = 0 ORDER BY created_at DESC, rev DESC",
+                        (list_row["id"],),
+                    ).fetchall()
+                    for index, item_row in enumerate(item_rows):
+                        # bump: devices past this watermark must receive the
+                        # backfilled order via delta pull
+                        rev = next_rev(conn)
+                        conn.execute(
+                            "UPDATE items SET sort_order = ?, rev = ? WHERE id = ?",
+                            (index, rev, item_row["id"]),
+                        )
+            # v4/v1/v2/v3 → v5 (no data changes): the name-dedupe index goes,
+            # duplicates are allowed on one list (constitution v1.3.0).
+            conn.execute(_V5_DROP_NAME_KEY_INDEX)
         _seed_default_list(conn)
-        conn.execute("PRAGMA user_version = 4")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.execute(
             "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (SCHEMA_VERSION, stamp()),
