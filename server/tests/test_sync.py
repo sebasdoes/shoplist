@@ -1,0 +1,207 @@
+"""T015 (written FIRST, TDD) — sync engine behaviors via the push/pull API.
+
+Per-field LWW (research D2), auto-dedupe on name_key (research D6), tombstone
+precedence, out-of-order push safety, pull watermark + full-snapshot flag (>500
+rows, data-model rev), server-stamped timestamps.
+"""
+
+import uuid
+
+
+def push(client, headers, mutations):
+    return client.post("/api/v1/sync/push", json={"mutations": mutations}, headers=headers)
+
+
+def pull(client, headers, watermark, include_history=True):
+    return client.post(
+        "/api/v1/sync/pull",
+        json={"watermark": watermark, "include_history": include_history},
+        headers=headers,
+    )
+
+
+def item_mut(**overrides):
+    fields = {"id": str(uuid.uuid4()), "name": "koffie", "tombstone": False}
+    fields.update(overrides)
+    return {"op": "upsert_item", "item": fields}
+
+
+def active_items(client, headers, watermark):
+    resp = pull(client, headers, watermark, include_history=False)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def find_by_id(rows, item_id):
+    return next(r for r in rows if r["id"] == item_id)
+
+
+def test_quantity_edit_and_note_edit_both_survive(client, auth):
+    """research D2: per-field LWW — a per-field edit does not clobber the other field."""
+    headers = auth()
+    item_id = str(uuid.uuid4())
+    r = push(client, headers, [item_mut(id=item_id, name="koffie", quantity="1x")])
+    assert r.status_code == 200
+    assert r.json()["applied"][0]["merged_into"] is None
+
+    # Device B only edits the note; device A only edits the quantity, afterwards.
+    r = push(
+        client,
+        auth(sub="user-b"),
+        [{"op": "upsert_item", "item": {"id": item_id, "note": "the small ones"}}],
+    )
+    assert r.status_code == 200
+    r = push(client, headers, [{"op": "upsert_item", "item": {"id": item_id, "quantity": "2x"}}])
+    assert r.status_code == 200
+
+    data = active_items(client, headers, 0)
+    row = find_by_id(data["items"], item_id)
+    assert row["quantity"] == "2x"
+    assert row["note"] == "the small ones"
+
+
+def test_same_field_lww_last_write_wins(client, auth):
+    headers = auth()
+    a = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=a, name="melk", quantity="1x")])
+    headers_b = auth(sub="user-b")
+    push(client, headers_b, [{"op": "upsert_item", "item": {"id": a, "quantity": "9x"}}])
+    push(client, headers, [{"op": "upsert_item", "item": {"id": a, "quantity": "3x"}}])
+    row = find_by_id(active_items(client, headers, 0)["items"], a)
+    assert row["quantity"] == "3x"
+
+
+def test_auto_dedupe_normalized_name_key(client, auth):
+    """research D6: casefold + trim + collapse whitespace + NFKD diacritic strip."""
+    headers = auth()
+    first = str(uuid.uuid4())
+    r = push(
+        client, headers, [item_mut(id=first, name="Café au Lait", quantity="2x", note="morgen")]
+    )
+    assert r.status_code == 200
+
+    second = str(uuid.uuid4())
+    r = push(client, headers, [item_mut(id=second, name="cafe   au lait", note="avond")])
+    assert r.status_code == 200
+    applied = r.json()["applied"][0]
+    assert applied["merged_into"] == first
+
+    data = active_items(client, headers, 0)
+    actives = [x for x in data["items"] if x["tombstone"] == 0]
+    assert [x["id"] for x in actives] == [first]
+    survivor = actives[0]
+    assert survivor["name"] == "Café au Lait"
+
+
+def test_tombstone_wins_over_same_epoch_edit(client, auth):
+    headers = auth()
+    a = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=a, name="brood", staple=True, quantity="1")])
+    # delete (tombstone) then a concurrent edit — the tombstone must win.
+    push(client, headers, [{"op": "upsert_item", "item": {"id": a, "tombstone": True}}])
+    push(
+        client,
+        auth(sub="user-b"),
+        [{"op": "upsert_item", "item": {"id": a, "note": "later edit"}}],
+    )
+
+    data = active_items(client, headers, 0)
+    row = find_by_id(data["items"], a)
+    assert row["tombstone"] == 1
+    # staple flag survives deletion (data-model items.staple note)
+    assert row["staple"] == 1
+
+
+def test_edit_then_late_tombstone_loses_edit(client, auth):
+    """Reverse order: edit arrives first, tombstone after — the delete still wins (LWW)."""
+    headers = auth()
+    a = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=a, name="thee")])
+    push(client, headers, [{"op": "upsert_item", "item": {"id": a, "note": "earlier edit"}}])
+    push(client, headers, [{"op": "upsert_item", "item": {"id": a, "tombstone": True}}])
+    row = find_by_id(active_items(client, headers, 0)["items"], a)
+    assert row["tombstone"] == 1
+    assert row["note"] == "earlier edit"  # tombstone does not erase data, it wins on liveness
+
+
+def test_out_of_order_push_safety(client, auth):
+    """Independent pushes in any order all land; batch applies in order."""
+    headers = auth()
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    r = push(
+        client,
+        headers,
+        [item_mut(id=i, name=f"item-{n}") for n, i in reversed(list(enumerate(ids)))],
+    )
+    assert r.status_code == 200
+    assert [a["id"] for a in r.json()["applied"]] == list(reversed(ids))
+    rows = active_items(client, headers, 0)["items"]
+    assert sorted(x["name"] for x in rows) == ["item-0", "item-1", "item-2"]
+
+
+def test_pull_watermark_incremental(client, auth):
+    headers = auth()
+    a = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=a, name="rijst")])
+    first = pull(client, headers, 0)
+    assert first.status_code == 200
+    body = first.json()
+    assert body["full_snapshot"] is False
+    watermark = body["watermark"]
+    assert watermark >= 1
+    assert [x["id"] for x in body["items"]] == [a]
+
+    b = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=b, name="pasta")])
+    second = pull(client, headers, watermark).json()
+    assert [x["id"] for x in second["items"]] == [b]
+    assert second["watermark"] > watermark
+
+
+def test_pull_full_snapshot_flag_over_500(client, auth):
+    """data-model rev: delta > 500 rows → full snapshot flag."""
+    headers = auth()
+    batch = [item_mut(name=f"bulk-{i}") for i in range(510)]
+    r = push(client, headers, batch)
+    assert r.status_code == 200
+    watermark = r.json()["applied"][0]["rev"] - 1  # watermark below the bulk push
+
+    resp = pull(client, headers, watermark, include_history=False)
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["full_snapshot"] is True
+    assert len(body["items"]) == 510
+    assert body["watermark"] >= max(a["rev"] for a in r.json()["applied"])
+
+
+def test_server_stamped_timestamps(client, auth):
+    """Client clock ignored — timestamps come back server-stamped ISO-8601 UTC."""
+    from datetime import datetime
+
+    headers = auth()
+    a = str(uuid.uuid4())
+    r = push(client, headers, [item_mut(id=a, name="kaas")])
+    applied = r.json()["applied"][0]
+    assert applied["id"] == a
+    assert applied["rev"] >= 1
+    stamped = datetime.fromisoformat(applied["updated_at"])
+    assert stamped.tzinfo is not None
+    # "2026-…+00:00" — UTC
+    assert stamped.utcoffset().total_seconds() == 0
+
+    data = pull(client, headers, 0, include_history=True).json()
+    assert isinstance(data["history"], list)
+
+
+def test_tombstone_propagates_to_offline_devices(client, auth):
+    """data-model items.tombstone: 1 = deleted, propagates to offline devices via pull."""
+    headers = auth()
+    offline_headers = auth(sub="user-b")
+    a = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=a, name="wasmiddel")])
+    watermark = pull(client, offline_headers, 0, include_history=False).json()["watermark"]
+
+    push(client, headers, [{"op": "upsert_item", "item": {"id": a, "tombstone": True}}])
+    delta = pull(client, offline_headers, watermark, include_history=False).json()
+    row = find_by_id(delta["items"], a)
+    assert row["tombstone"] == 1

@@ -1,0 +1,34 @@
+# Shoplist deployment (VPS, /opt/docker) — file set for User A to apply.
+#
+# 1. mkdir -p /opt/docker/shoplist && chown 1000:1000 /opt/docker/shoplist
+#    (the image runs as uid 1000; an unchowned host dir makes SQLite die with
+#    "unable to open database file" — verified hit in practice)
+# 2. Append the service below to /opt/docker/docker-compose.yaml (the `proxy`
+#    network already exists there).
+# 2. Append the Caddy block to the Caddyfile. Validate:
+#      docker exec caddy caddy validate --config /etc/caddy/Caddyfile
+#      docker compose -f /opt/docker/docker-compose.yaml config --quiet
+# 3. Bring up: docker compose -f /opt/docker/docker-compose.yaml up -d shoplist
+# 4. Remember bind-mount staleness on this host: after editing any mounted
+#    file, `docker compose up -d --force-recreate shoplist`.
+#
+# Data: /opt/docker/shoplist/shoplist.db (SQLite WAL) — include in backups.
+# Verify end-to-end after apply:
+#   curl -sk -D- -o /dev/null https://shoplist.example.com/health   -> {"ok": true}
+#   curl -sk -D- https://shoplist.example.com/api/v1/sync/pull      -> 401 (auth enforced)
+#   first browser hit should redirect to sso.example.com Pocket ID login.
+
+services:
+  shoplist:
+    image: ghcr.io/sebasdoes/shoplist-server:latest
+    container_name: shoplist
+    restart: unless-stopped
+    environment:
+      - OIDC_ISSUER=https://sso.example.com
+      - OIDC_AUDIENCE=abac6ecf-d312-4ed1-a3f8-46e5958a0fe8
+      - SHOPLIST_DB=/data/shoplist.db
+      - SERVE_FRONTEND_DIR=/srv/static
+    volumes:
+      - /opt/docker/shoplist:/data
+    networks:
+      - proxy
