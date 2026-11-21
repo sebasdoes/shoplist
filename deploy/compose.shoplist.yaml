@@ -1,4 +1,4 @@
-# Shoplist deployment (VPS, /opt/docker) — file set for User A to apply.
+# Shoplist deployment (VPS, /opt/docker) — file set for the operator to apply.
 #
 # 1. mkdir -p /opt/docker/shoplist && chown 1000:1000 /opt/docker/shoplist
 #    (the image runs as uid 1000; an unchowned host dir makes SQLite die with
