@@ -99,6 +99,14 @@ def create_app(
         issuer/audience at runtime (public repo never bakes real URLs)."""
         return {"issuer": settings.oidc_issuer, "audience": settings.oidc_audience}
 
+    @app.post("/api/v1/log")
+    def client_log(body: dict) -> dict:
+        """Diagnostic beacon: browser-side errors land in the server log.
+        Unauthenticated like /config; stores nothing, prints a truncated line."""
+        msg = str(body.get("msg") or "empty")[:2000]
+        print(f"[client-log] {msg}", flush=True)
+        return {"ok": True}
+
     serve_dir = settings.serve_frontend_dir
     if serve_dir:
         root = Path(serve_dir)

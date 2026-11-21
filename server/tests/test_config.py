@@ -15,3 +15,9 @@ def test_config_does_not_leak_secrets(client):
     body = json.loads(client.get("/api/v1/config").text)
     leaked = {k: v for k, v in body.items() if not v}
     assert not leaked, "empty values would defeat the runtime-config contract"
+
+
+def test_client_log_accepts_msg(client):
+    r = client.post("/api/v1/log", json={"msg": "probe"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True}
