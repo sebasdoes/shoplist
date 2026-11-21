@@ -3,7 +3,7 @@
 // refresh_token, else interactive redirect. Session claims also feed T022
 // (display name).
 import * as db from './db';
-import { config } from './config';
+import { config, loadRuntimeConfig } from './config';
 
 const SESSION_KEY = 'session';
 const VERIFIER_KEY = 'pkce_code_verifier';
@@ -43,6 +43,7 @@ export function defaultEndpoints(): Endpoints {
 let endpointsCache: Endpoints | null = null;
 
 export async function getEndpoints(): Promise<Endpoints> {
+  await loadRuntimeConfig();
   if (endpointsCache) return endpointsCache;
   const fallback = defaultEndpoints();
   try {
@@ -130,6 +131,7 @@ export async function startLogin(): Promise<void> {
 }
 
 async function tokenRequest(body: URLSearchParams): Promise<TokenResponse> {
+  await loadRuntimeConfig();
   const endpoints = await getEndpoints();
   const res = await fetch(endpoints.token_endpoint, {
     method: 'POST',
