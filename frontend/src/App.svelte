@@ -42,17 +42,35 @@
     wireStoresToSync();
     await initDb();
     bootstrapServices();
-    await oidc.handleRedirectIfPresent();
-    const token = await oidc.ensureFreshToken(); // silent auth (T012)
-    const session = await oidc.getSession();
-    if (session) {
-      userStore.set({ sub: session.sub, name: session.name }); // T022
-      auth = 'signedIn';
-      await loadStoresFromDb(); // render from IndexedDB first, network-independent
-      initSyncTriggers();
-      if (token !== null) void runSync('startup');
-    } else {
-      auth = 'signedOut';
+    try {
+      await oidc.handleRedirectIfPresent();
+      const token = await oidc.ensureFreshToken(); // silent auth (T012)
+      const session = await oidc.getSession();
+      if (session) {
+        userStore.set({ sub: session.sub, name: session.name }); // T022
+        auth = 'signedIn';
+        await loadStoresFromDb(); // render from IndexedDB first, network-independent
+        initSyncTriggers();
+        if (token !== null) void runSync('startup');
+      } else {
+        auth = 'signedOut';
+      }
+    } catch (e) {
+      // Never freeze on "Shoplist…": surface the failure and fall back to
+      // whatever IndexedDB already holds (a successful earlier exchange).
+      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      void logBreadcrumb(`startup-failed ${msg}`);
+      const fallback = await oidc.getSession().catch(() => null);
+      if (fallback) {
+        userStore.set({ sub: fallback.sub, name: fallback.name });
+        auth = 'signedIn';
+        await loadStoresFromDb();
+        initSyncTriggers();
+        void runSync('startup');
+      } else {
+        auth = 'signedOut';
+        signInError = `Startup error: ${msg}`;
+      }
     }
   });
 
