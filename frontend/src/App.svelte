@@ -8,6 +8,7 @@
     toggleTick,
     deleteItem,
     saveItemEdit,
+    bumpQuantity,
     completeTrip,
     loadStoresFromDb,
     wireStoresToSync,
@@ -151,7 +152,7 @@
 
   <ul class="list">
     {#each $activeItems as item (item.id)}
-      <ItemRow {item} ontoggle={(i) => void toggleTick(i)} onedit={(i) => (editing = i)} />
+      <ItemRow {item} ontoggle={(i) => void toggleTick(i)} onedit={(i) => (editing = i)} onqty={(i, d) => void bumpQuantity(i, d)} />
     {:else}
       <li class="empty-hint">Nothing here yet — add the first item above.</li>
     {/each}

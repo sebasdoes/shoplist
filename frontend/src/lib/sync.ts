@@ -6,6 +6,8 @@
 import { apiPull, apiPush, type ApiItem } from './api';
 import * as db from './db';
 import type { Item, OutboxStored } from './db';
+import { config } from './config';
+import * as oidc from './oidc';
 import { nameKey } from './validate';
 import {
   flushHistoryDeletes,
@@ -242,7 +244,7 @@ export async function requestBackgroundSync(): Promise<void> {
   }
 }
 
-/** Triggers: online event, focus, 60 s visible timer, background-sync poke. */
+/** Triggers: online event, focus, 5 s visible timer, SSE server push, bg-sync. */
 export function initSyncTriggers(): void {
   if (typeof window === 'undefined') return;
 
@@ -251,9 +253,11 @@ export function initSyncTriggers(): void {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') void runSync('visible');
   });
+  // SC-002 wants partner edits visible within seconds; SSE is the fast path,
+  // this 5 s poll is the fallback (e.g. EventSource refused).
   window.setInterval(() => {
-    if (document.visibilityState === 'visible') void runSync('timer60s');
-  }, 60_000);
+    if (document.visibilityState === 'visible') void runSync('timer5s');
+  }, 5_000);
 
   if (navigator.serviceWorker) {
     navigator.serviceWorker.addEventListener('message', (event) => {
@@ -261,6 +265,60 @@ export function initSyncTriggers(): void {
       if (data?.type === 'SHOPLIST_SYNC_TRIGGER') void runSync('bg-sync');
     });
   }
+
+  void startEventStream();
+}
+
+// ---- SSE server push (fast path for instant cross-device updates) ----
+
+let streamStarted = false;
+
+async function startEventStream(): Promise<void> {
+  if (streamStarted || typeof EventSource === 'undefined' || !navigator.onLine) return;
+  streamStarted = true;
+  for (;;) {
+    let waitMs = 5000;
+    try {
+      const token = await oidc.ensureFreshToken();
+      if (token) {
+        await openEventStream(token);
+      } else {
+        waitMs = 10000; // signed out; the sign-in flow will re-enter
+      }
+    } catch {
+      /* retry with backoff below */
+    }
+    if (!navigator.onLine) waitMs = 15000;
+    await sleep(waitMs);
+  }
+}
+
+function openEventStream(token: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const es = new EventSource(`${config.apiBase}/events?token=${encodeURIComponent(token)}`);
+    const finish = () => {
+      try {
+        es.close();
+      } catch {
+        /* already closed */
+      }
+      resolve();
+    };
+    es.onopen = () => undefined; // connected; messages follow
+    es.onmessage = (ev) => {
+      try {
+        const payload = (ev as MessageEvent).data as string;
+        if (payload === 'changed') void runSync('server-push');
+      } catch {
+        /* ignore malformed frames */
+      }
+    };
+    es.onerror = finish; // EventSource cannot recover its token; reopen fresh
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 export function clearPostMutationTimerForTests(): void {

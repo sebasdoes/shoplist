@@ -246,6 +246,18 @@ export async function saveItemEdit(
 
 // ---- US4: quick-add re-add (T034 reuses the T021 add pipeline) ----
 
+// ---- quantity stepper: +/− on the row bumps the first integer, clamped at 1 ----
+export async function bumpQuantity(item: Item, delta: number): Promise<void> {
+  const next = bumpQuantityText(item.quantity, delta);
+  if (next === null || next === item.quantity) return;
+  await saveItemEdit(item, {
+    name: item.name,
+    quantity: next,
+    note: item.note,
+    staple: item.staple,
+  });
+}
+
 export function reAddFromHistory(suggestion: Suggestion, opts: { createdBy?: string } = {}) {
   return addItem(
     {

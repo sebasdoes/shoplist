@@ -5,10 +5,12 @@
     item,
     ontoggle,
     onedit,
+    onqty,
   }: {
     item: Item;
     ontoggle: (item: Item) => void;
     onedit: (item: Item) => void;
+    onqty: (item: Item, delta: number) => void;
   } = $props();
 
   let pressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -44,9 +46,24 @@
       {item.name}
       {#if item.staple}<span class="staple" title="Staple">★</span>{/if}
     </span>
-    {#if item.quantity}<span class="qty">{item.quantity}</span>{/if}
     {#if item.note}<span class="note">{item.note}</span>{/if}
   </button>
+  <div class="qty-side">
+    <button
+      type="button"
+      class="step"
+      aria-label={`Remove one ${item.name}`}
+      disabled={!/^-?\d+/.test(item.quantity ?? '')}
+      onclick={() => onqty(item, -1)}
+    >−</button>
+    <span class="qty" role="spinbutton" aria-label={`Amount of ${item.name}`}>{item.quantity ?? '1'}</span>
+    <button
+      type="button"
+      class="step"
+      aria-label={`Add one ${item.name}`}
+      onclick={() => onqty(item, 1)}
+    >+</button>
+  </div>
 </li>
 
 <style>
@@ -85,9 +102,30 @@
     color: var(--brand);
     font-weight: 600;
     font-size: 0.85rem;
-    background: var(--surface-2);
+    min-width: 2.6rem;
+    text-align: center;
+  }
+  .qty-side {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    flex-shrink: 0;
+  }
+  .step {
+    width: 1.9rem;
+    height: 1.9rem;
     border-radius: 999px;
-    padding: 0.1rem 0.55rem;
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--ink);
+    font: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0;
+  }
+  .step:disabled {
+    opacity: 0.35;
   }
   .note {
     color: var(--muted);

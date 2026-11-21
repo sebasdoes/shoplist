@@ -6,11 +6,14 @@ import sqlite3
 from pathlib import Path
 from typing import Iterator
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+import asyncio
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials
 
 from . import db, sync
-from .auth import AuthUser, create_jwks_provider, make_auth_dependency
+from .auth import AuthUser, create_jwks_provider, make_auth_dependency, verify_token
 from .config import Settings, get_settings
 from .history import history_delete, history_list
 from .models import PullRequest, PullResponse, PushRequest, PushResponse
@@ -106,6 +109,47 @@ def create_app(
         msg = str(body.get("msg") or "empty")[:2000]
         print(f"[client-log] {msg}", flush=True)
         return {"ok": True}
+
+    @app.get("/api/v1/events")
+    async def events(request: Request, token: str = Query(...)):
+        """Server push (SSE): fires 'changed' whenever any revision advances, so
+        the other device's open PWA pulls within ~0.5 s instead of polling.
+        EventSource cannot set headers, so the JWT arrives via ?token= (same
+        validation as the bearer path). No DATA flows here — a changed event
+        only says 'pull now'; /sync/pull still enforces auth."""
+        verify_token(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials=token),
+            provider,
+            settings.oidc_issuer,
+            settings.oidc_audience,
+        )
+
+        async def stream():
+            conn = db.connect(app.state.db_path)
+            try:
+                last = db.current_rev(conn)
+                yield "data: connected\n\n"
+                idle_ticks = 0
+                while True:
+                    await asyncio.sleep(0.5)
+                    rev = db.current_rev(conn)
+                    if rev != last:
+                        last = rev
+                        idle_ticks = 0
+                        yield "data: changed\n\n"
+                    else:
+                        idle_ticks += 1
+                        if idle_ticks >= 40:  # ~20 s heartbeat through proxies
+                            idle_ticks = 0
+                            yield ": keep-alive\n\n"
+            finally:
+                conn.close()
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     serve_dir = settings.serve_frontend_dir
     if serve_dir:
