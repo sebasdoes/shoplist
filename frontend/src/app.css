@@ -87,12 +87,48 @@ textarea::placeholder {
   min-width: 0;
 }
 
-.app-header .user {
+/* feature-003 (T009): the header shows the ACTIVE LIST NAME beside the basket
+   menu button — no user name, no Sign out (the drawer owns those). */
+.app-header .active-list-name {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* feature-003 (T009): drawer account section at the drawer top */
+.drawer-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 0.25rem;
+}
+
+.drawer-account .account-name {
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-account .account-signout {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+/* feature-003 (T009): "Nothing here yet" stops hugging the add bar — at
+   least 1.4rem of top spacing. */
+.empty-hint {
+  margin-top: 1.4rem;
+  padding-top: 1.4rem;
+  color: var(--muted);
 }
 
 .list {

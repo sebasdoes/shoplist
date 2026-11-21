@@ -1,9 +1,13 @@
-"""T002 — SQLite (WAL) helpers, schema v1→v2 migration runner, global rev sequence.
+"""T002 — SQLite (WAL) helpers, schema v1→v2→v3 migration runner, global rev sequence.
 
 Schema v2 (specs/002 data-model.md): adds `lists`, seeds the default list
 `Boodschappen` (fixed uuid), backfills items/trips/history `list_id`, and
-swaps the partial unique index to (list_id, name_key). Gated by
-PRAGMA user_version; idempotent; the rev sequence is untouched.
+swaps the partial unique index to (list_id, name_key).
+
+Schema v3 (feature 003 menu-polish): adds `lists.sort_order`
+(INTEGER NOT NULL DEFAULT 0) and backfills a sequential order by
+(created_at, rowid). Gated by PRAGMA user_version; idempotent; the rev
+sequence is untouched by v3.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DEFAULT_LIST_ID = "00000000-0000-4000-8000-000000000001"
 DEFAULT_LIST_NAME = "Boodschappen"
@@ -103,6 +107,13 @@ _SCHEMA_V2 = (
     + "\n".join(statement + ";" for statement in _MIGRATE_V1_TO_V2_STATEMENTS)
 )
 
+# v3: lists gain a household-wide display position. ALTER keeps existing data;
+# the backfill assigns a sequential order by (created_at, rowid).
+_V3_ADD_SORT_ORDER = "ALTER TABLE lists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+
+# Full v3 DDL for fresh installs: v2 schema + sort_order directly (no ALTER).
+_SCHEMA_V3 = _SCHEMA_V2 + _V3_ADD_SORT_ORDER + ";"
+
 
 def stamp() -> str:
     """Server-stamped ISO-8601 UTC timestamp (client clocks are not trusted)."""
@@ -163,15 +174,44 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         if current == 0:
-            # Fresh install: build the full v2 schema directly, then seed.
-            _run_script(conn, _SCHEMA_V2)
+            # Fresh install: build the full v3 schema directly, then seed.
+            _run_script(conn, _SCHEMA_V3)
         else:
-            # v1 → v2 one-shot migration, backfills default to the seeded list.
-            _run_script(conn, _SCHEMA_V2_ADDITIONS)
-            for statement in _MIGRATE_V1_TO_V2_STATEMENTS:
-                conn.execute(statement)
+            if current == 1:
+                # v1 → v2 one-shot migration, backfills default to the seeded list.
+                _run_script(conn, _SCHEMA_V2_ADDITIONS)
+                for statement in _MIGRATE_V1_TO_V2_STATEMENTS:
+                    conn.execute(statement)
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_migrations(version, applied_at) "
+                    "VALUES (?, ?)",
+                    (2, stamp()),
+                )
+            # v2 → v3 (also reached straight from v1 in the same transaction)
+            conn.execute(_V3_ADD_SORT_ORDER)
+            # Lift sync_meta above any seeded data revs FIRST (same lesson as
+            # v2): otherwise devices already past these revs never see the
+            # new sort_order via delta pulls.
+            floor = conn.execute(
+                "SELECT MAX(m) FROM ("
+                "SELECT MAX(rev) AS m FROM lists UNION ALL "
+                "SELECT MAX(rev) FROM items UNION ALL "
+                "SELECT MAX(rev) FROM history UNION ALL "
+                "SELECT MAX(rev) FROM trips)"
+            ).fetchone()[0] or 0
+            if floor > 0:
+                conn.execute(
+                    "UPDATE sync_meta SET value = MAX(value, ?) WHERE key = 'rev'", (floor,)
+                )
+            rows = conn.execute("SELECT id FROM lists ORDER BY created_at, rowid").fetchall()
+            for index, row in enumerate(rows):
+                rev = next_rev(conn)  # bump: devices past this watermark must
+                conn.execute(          # receive the new order via delta pull
+                    "UPDATE lists SET sort_order = ?, rev = ? WHERE id = ?",
+                    (index, rev, row["id"]),
+                )
         _seed_default_list(conn)
-        conn.execute("PRAGMA user_version = 2")
+        conn.execute("PRAGMA user_version = 3")
         conn.execute(
             "INSERT OR REPLACE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (SCHEMA_VERSION, stamp()),

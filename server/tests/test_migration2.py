@@ -81,9 +81,11 @@ def test_migrates_v1_db(tmp_path):
     conn = db.connect(path)  # the migration runs as part of connect()
     conn.row_factory = sqlite3.Row
 
-    # PRAGMA user_version = 2
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
-    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+    # connects at v1 → the runner migrates straight through v2 to the current gate
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == (
+        db.SCHEMA_VERSION
+    )
 
     # columns added
     assert "list_id" in table_columns(conn, "items")
@@ -144,7 +146,7 @@ def test_migrates_v1_db(tmp_path):
     before_items = [tuple(r) for r in conn.execute("SELECT * FROM items ORDER BY id").fetchall()]
     db.migrate(conn)
     conn.commit()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     after_lists = [tuple(r) for r in conn.execute("SELECT * FROM lists ORDER BY id").fetchall()]
     assert after_lists == before_lists
     assert len(after_lists) == 2  # no second Boodschappen
@@ -155,8 +157,10 @@ def test_migrates_v1_db(tmp_path):
 def test_fresh_install_builds_v2_directly(tmp_path):
     path = str(tmp_path / "fresh.db")
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
-    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == (
+        db.SCHEMA_VERSION
+    )
     assert "list_id" in table_columns(conn, "items")
     assert "list_id" in table_columns(conn, "trips")
     assert "list_id" in table_columns(conn, "history")
@@ -173,6 +177,8 @@ def test_fresh_reopen_is_noop(tmp_path):
     path = str(tmp_path / "reopen.db")
     db.connect(path)
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
-    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == (
+        db.SCHEMA_VERSION
+    )
     assert conn.execute("SELECT COUNT(*) FROM lists").fetchone()[0] == 1

@@ -47,7 +47,7 @@ export interface PushItemMutation {
 }
 
 export interface PushMutation {
-  op: 'upsert_item' | 'trip' | 'create_list' | 'delete_list';
+  op: 'upsert_item' | 'trip' | 'create_list' | 'delete_list' | 'reorder_lists';
   item?: PushItemMutation;
   trip?: {
     id: string;
@@ -56,22 +56,28 @@ export interface PushMutation {
   };
   list?: { id: string; name: string };
   list_id?: string;
+  /** reorder_lists: every live list id in the new household-wide sequence. */
+  order?: string[];
 }
 
-/** A list echoed back by the server in the push response's `lists` section. */
+/** A list echoed back by the server in the push response's `lists` section.
+ * feature-003: v3 servers also echo `sort_order`. */
 export interface AppliedList {
   id: string;
   name: string;
   rev: number;
   tombstone: boolean;
+  sort_order?: number;
 }
 
-/** A list row in the pull response (contracts/api.md). */
+/** A list row in the pull response (contracts/api.md). feature-003: v3 rows
+ * carry `sort_order`. */
 export interface ApiList {
   id: string;
   name: string;
   tombstone: boolean;
   rev: number;
+  sort_order?: number;
 }
 
 export interface PushRequest {

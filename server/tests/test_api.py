@@ -183,7 +183,7 @@ def test_pull_watermark0_snapshot_includes_all_lists(client, auth):
     lists = {x["id"]: x for x in body["lists"]}
     assert set(lists) == {"00000000-0000-4000-8000-000000000001", LIST_A}
     for entry in lists.values():
-        assert set(entry.keys()) == {"id", "name", "tombstone", "rev"}
+        assert set(entry.keys()) == {"id", "name", "tombstone", "rev", "sort_order"}
     assert lists["00000000-0000-4000-8000-000000000001"]["name"] == "Boodschappen"
     assert lists["00000000-0000-4000-8000-000000000001"]["tombstone"] is False
     assert lists[LIST_A]["tombstone"] is True  # tombstoned lists ship too
@@ -215,12 +215,13 @@ def test_push_response_applied_lists(client, auth):
     assert set(applied.keys()) == {"items", "lists"}
     assert applied["items"] == []
     entry = applied["lists"][0]
-    assert set(entry.keys()) == {"id", "name", "rev", "tombstone"}
+    assert set(entry.keys()) == {"id", "name", "rev", "tombstone", "sort_order"}
     assert entry == {
         "id": LIST_A,
         "name": "Winkelpad A",
         "rev": entry["rev"],
         "tombstone": False,
+        "sort_order": 1,
     }
 
     r = push(client, headers, [{"op": "delete_list", "list_id": LIST_A}])

@@ -9,15 +9,20 @@
     createList,
     deleteList,
     undoDeleteList,
+    reorderLists,
+    sortListsForDisplay,
+    userStore,
   } from '../lib/stores';
 
-  let { onclose }: { onclose: () => void } = $props();
+  // feature-003 (T007): the drawer owns the account section (name + Sign out)
+  let { onclose, onsignout }: { onclose: () => void; onsignout: () => void } = $props();
 
   let newName = $state('');
   let error = $state<string | null>(null);
   let snackbarListId = $state<string | null>(null);
 
-  const liveLists = $derived($listsStore.filter((l) => !l.tombstone));
+  // feature-003: rows RENDER in (sort_order asc, created_at asc) order.
+  const liveLists = $derived(sortListsForDisplay($listsStore).filter((l) => !l.tombstone));
 
   function select(id: string) {
     void setActiveList(id); // IndexedDB-only switch (SC-007), no network
@@ -55,22 +60,61 @@
     void undoDeleteList(snackbarListId);
     snackbarListId = null;
   }
+
+  // feature-003 (T006/T007): up/down tap → rebuild the FULL ordered id array,
+  // apply to IndexedDB immediately, enqueue one reorder_lists mutation.
+  function move(id: string, delta: number) {
+    error = null;
+    const ids = liveLists.map((l) => l.id);
+    const i = ids.indexOf(id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    try {
+      void reorderLists(ids).catch((e) => {
+        error = e instanceof Error ? e.message : String(e);
+      });
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
 </script>
 
-<button class="menu-backdrop" aria-label="Close lists menu" tabindex="-1" onclick={onclose}></button>
+<button class="menu-backdrop" aria-label="Close lists menu" tabindex="-1" onclick={onclose}
+></button>
 <nav class="menu-drawer" aria-label="Lists">
+  {#if $userStore}
+    <!-- feature-003 (T007): account section at the drawer top -->
+    <div class="drawer-account">
+      <span class="account-name">{$userStore.name}</span>
+      <button class="btn-ghost account-signout" onclick={onsignout}>Sign out</button>
+    </div>
+  {/if}
+
   <header class="drawer-head">
     <h2>Lists</h2>
     <button class="btn-ghost" onclick={onclose}>Close</button>
   </header>
 
   <ul class="lists">
-    {#each liveLists as list (list.id)}
+    {#each liveLists as list, i (list.id)}
       <li class:active={list.id === $activeListId}>
         <button
           class="list-name"
           aria-current={list.id === $activeListId ? 'true' : undefined}
           onclick={() => select(list.id)}>{list.name}</button
+        >
+        <button
+          class="mv"
+          aria-label="Move {list.name} up"
+          disabled={i === 0}
+          onclick={() => move(list.id, -1)}>↑</button
+        >
+        <button
+          class="mv"
+          aria-label="Move {list.name} down"
+          disabled={i === liveLists.length - 1}
+          onclick={() => move(list.id, 1)}>↓</button
         >
         <button class="del" aria-label="Delete {list.name}" onclick={() => remove(list.id)}
           >✕</button
@@ -168,6 +212,22 @@
     width: 2rem;
     height: 2rem;
     flex: 0 0 auto;
+  }
+  /* feature-003 — up/down reorder arrows (optimistic, offline-first) */
+  .mv {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--ink);
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+    padding: 0;
+    line-height: 1;
+  }
+  .mv:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
   .new-list {
     display: flex;

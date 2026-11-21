@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import unicodedata
+import uuid
 
 from . import db
 from .auth import AuthUser
@@ -211,7 +212,9 @@ def apply_create_list(
     conn: sqlite3.Connection, payload: ListPayload, user: AuthUser
 ) -> AppliedList:
     """create_list: validated/trimmed name (pydantic), NOT unique; duplicate id is
-    an idempotent no-op returning the row's current state (outbox retry safety)."""
+    an idempotent no-op returning the row's current state (outbox retry safety).
+    v3 lands the new row at the back of the household order (max sort_order + 1,
+    tombstoned rows included so freed slots are never reused)."""
     existing = conn.execute("SELECT * FROM lists WHERE id = ?", (payload.id,)).fetchone()
     if existing is not None:
         return AppliedList(
@@ -219,14 +222,23 @@ def apply_create_list(
             name=existing["name"],
             rev=existing["rev"],
             tombstone=bool(existing["tombstone"]),
+            sort_order=existing["sort_order"],
         )
+    max_row = conn.execute("SELECT MAX(sort_order) FROM lists").fetchone()
+    sort_order = (max_row[0] if max_row[0] is not None else -1) + 1
     rev = db.next_rev(conn)
     conn.execute(
-        "INSERT INTO lists (id, name, created_by, created_at, tombstone, rev) "
-        "VALUES (?, ?, ?, ?, 0, ?)",
-        (payload.id, payload.name, user.subject, db.stamp(), rev),
+        "INSERT INTO lists (id, name, created_by, created_at, tombstone, rev, sort_order) "
+        "VALUES (?, ?, ?, ?, 0, ?, ?)",
+        (payload.id, payload.name, user.subject, db.stamp(), rev, sort_order),
     )
-    return AppliedList(id=payload.id, name=payload.name, rev=rev, tombstone=False)
+    return AppliedList(
+        id=payload.id,
+        name=payload.name,
+        rev=rev,
+        tombstone=False,
+        sort_order=sort_order,
+    )
 
 
 def apply_delete_list(conn: sqlite3.Connection, list_id: str, user: AuthUser) -> AppliedList:
@@ -237,7 +249,13 @@ def apply_delete_list(conn: sqlite3.Connection, list_id: str, user: AuthUser) ->
     if row is None:
         raise SyncError(f"unknown list: {list_id}", 400)
     if row["tombstone"]:
-        return AppliedList(id=row["id"], name=row["name"], rev=row["rev"], tombstone=True)
+        return AppliedList(
+            id=row["id"],
+            name=row["name"],
+            rev=row["rev"],
+            tombstone=True,
+            sort_order=row["sort_order"],
+        )
 
     live_count = conn.execute("SELECT COUNT(*) FROM lists WHERE tombstone = 0").fetchone()[0]
     if live_count <= 1:
@@ -253,7 +271,55 @@ def apply_delete_list(conn: sqlite3.Connection, list_id: str, user: AuthUser) ->
             "UPDATE items SET tombstone = 1, updated_at = ?, rev = ? WHERE id = ?",
             (now, db.next_rev(conn), item["id"]),
         )
-    return AppliedList(id=row["id"], name=row["name"], rev=rev, tombstone=True)
+    return AppliedList(
+        id=row["id"], name=row["name"], rev=rev, tombstone=True, sort_order=row["sort_order"]
+    )
+
+
+def _applied_list_row(row: sqlite3.Row) -> AppliedList:
+    return AppliedList(
+        id=row["id"],
+        name=row["name"],
+        rev=row["rev"],
+        tombstone=bool(row["tombstone"]),
+        sort_order=row["sort_order"],
+    )
+
+
+def apply_reorder_lists(
+    conn: sqlite3.Connection, payload: list[str], user: AuthUser
+) -> list[AppliedList]:
+    """reorder_lists (feature 003): assigns sort_order = index for each id in the
+    given sequence and bumps each row's rev via next_rev, so SSE/feeds and the
+    pull watermark propagate the new order to every device.
+    Unknown or tombstoned id → 400; validation happens BEFORE any write and the
+    push transaction rolls back anyway, so a failure leaves the order untouched.
+    Wire shape is FLAT: {"op": "reorder_lists", "order": [uuid, ...]} — the
+    full desired sequence, validated here (non-empty, uuids, no duplicates)."""
+    if not payload:
+        raise SyncError("order: the full list sequence is required", 422)
+    if len(set(payload)) != len(payload):
+        raise SyncError("order: duplicate list ids", 422)
+    for list_id in payload:
+        try:
+            uuid.UUID(list_id)
+        except (ValueError, TypeError):
+            raise SyncError(f"order: not a uuid: {list_id}", 422) from None
+        row = conn.execute("SELECT * FROM lists WHERE id = ?", (list_id,)).fetchone()
+        if row is None:
+            raise SyncError(f"unknown list: {list_id}", 400)
+        if row["tombstone"]:
+            raise SyncError(f"list is deleted: {list_id}", 400)
+
+    applied: list[AppliedList] = []
+    for index, list_id in enumerate(payload):
+        rev = db.next_rev(conn)
+        conn.execute(
+            "UPDATE lists SET sort_order = ?, rev = ? WHERE id = ?", (index, rev, list_id)
+        )
+        row = conn.execute("SELECT * FROM lists WHERE id = ?", (list_id,)).fetchone()
+        applied.append(_applied_list_row(row))
+    return applied
 
 
 def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> PushResponse:
@@ -273,6 +339,9 @@ def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> Push
             elif mutation.op == "delete_list":
                 assert mutation.list_id is not None
                 applied_lists.append(apply_delete_list(conn, mutation.list_id, user))
+            elif mutation.op == "reorder_lists":
+                assert mutation.order is not None
+                applied_lists.extend(apply_reorder_lists(conn, mutation.order, user))
             else:
                 assert mutation.trip is not None
                 from . import trips as trips_mod

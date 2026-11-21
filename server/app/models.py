@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -163,14 +164,18 @@ class ListPayload(BaseModel):
         return trimmed
 
 
+
 class Mutation(BaseModel):
     model_config = {"extra": "forbid", "populate_by_name": True}
 
-    op: Literal["upsert_item", "trip", "create_list", "delete_list"]
+    op: Literal["upsert_item", "trip", "create_list", "delete_list", "reorder_lists"]
     item: UpsertItem | None = None
     trip: TripMutation | None = None
     list: ListPayload | None = None
     list_id: str | None = None
+    # Sequence, NOT `list[...]`: the sibling field named `list` (bound to None)
+    # shadows the builtin in this class namespace and breaks pydantic's eval.
+    order: Sequence[str] | None = None
 
     @field_validator("list_id")
     @classmethod
@@ -187,6 +192,8 @@ class Mutation(BaseModel):
             raise ValueError("create_list requires list")
         if self.op == "delete_list" and self.list_id is None:
             raise ValueError("delete_list requires list_id")
+        if self.op == "reorder_lists" and self.order is None:
+            raise ValueError("reorder_lists requires order")
         return self
 
 
@@ -204,12 +211,14 @@ class Applied(BaseModel):
 
 
 class AppliedList(BaseModel):
-    """contracts/api.md v2: applied lists section — {id, name, rev, tombstone}."""
+    """contracts/api.md v2 + v3: applied lists section — {id, name, rev,
+    tombstone, sort_order}."""
 
     id: str
     name: str
     rev: int
     tombstone: bool
+    sort_order: int = 0
 
 
 class AppliedGroup(BaseModel):
@@ -247,6 +256,7 @@ class ListOut(BaseModel):
     name: str
     tombstone: bool
     rev: int
+    sort_order: int = 0
 
 
 class ItemOut(BaseModel):
@@ -321,4 +331,5 @@ def _row_to_list(row: Any) -> ListOut:
         name=row["name"],
         tombstone=bool(row["tombstone"]),
         rev=row["rev"],
+        sort_order=row["sort_order"],
     )

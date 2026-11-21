@@ -12,7 +12,7 @@ The app must be fully usable with zero connectivity: browse, add, check off, del
 
 ### III. Lists multiply across stores and use cases
 
-**Amended v1.1.0 (2026-11-21), explicit stakeholder decision.** Originally frozen at one list. Still true: no aisles/category grouping, no recipe integration, no sharing beyond the household, no reminders, no notifications. Now in scope: MULTIPLE named lists per household (grocery default plus per-store lists and non-shopping lists like a weekly meal plan), presented through a hamburger menu; each list has its own Trip done, its own staple pool, and its own keep/drop flow; the quick-add suggestion pool stays HOUSEHOLD-GLOBAL and is offered on every list. List management = create + delete only. Adding anything beyond that requires amending this principle again, in writing.
+**Amended v1.1.0 (2026-11-21), explicit stakeholder decision.** Originally frozen at one list. Still true: no aisles/category grouping, no recipe integration, no sharing beyond the household, no reminders, no notifications. Now in scope: MULTIPLE named lists per household (grocery default plus per-store lists and non-shopping lists like a weekly meal plan), presented through a hamburger menu; each list has its own Trip done, its own staple pool, and its own keep/drop flow; the quick-add suggestion pool stays HOUSEHOLD-GLOBAL and is offered on every list. List management = create + delete only. **Amended again v1.2.0 (2026-11-21, stakeholder request): list REORDERING in the menu is in scope** (per-device visible order synced via the household; no other management surface — still no renaming). Adding anything beyond that requires amending this principle again, in writing.
 
 ### IV. Conflict resolution is boring by design
 
@@ -39,4 +39,4 @@ Authentication goes through Pocket ID (OIDC, public client, PKCE). This app neve
 
 This constitution supersedes all other practices in this repo. Amendments require a documented reason, an entry in the version history below, and User A's approval. Complexity beyond a user story's acceptance scenarios must be justified against Principle III.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-21 | **Last Amended**: 2026-11-21
+**Version**: 1.2.0 | **Ratified**: 2026-11-21 | **Last Amended**: 2026-11-21

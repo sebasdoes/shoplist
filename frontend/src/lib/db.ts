@@ -26,7 +26,10 @@ export interface Item {
   local_created_at: string; // client ordering only, not a conflict source
 }
 
-/** T006 — lists store (schema v2), mirroring the server `lists` table. */
+/** T006 — lists store (schema v2), mirroring the server `lists` table.
+ * feature-003: rows gain `sort_order` (schema v3; household-wide display
+ * order, lower renders first). No structural IndexedDB change is needed —
+ * the field rides the row; missing (pre-v3 local) values read as 0. */
 export interface List {
   id: string;
   name: string; // trimmed, ≤100 chars, NOT unique
@@ -34,6 +37,7 @@ export interface List {
   created_at: string;
   tombstone: boolean;
   rev: number;
+  sort_order: number;
 }
 
 /** Fixed uuid of the migration-seeded default list (data-model.md). */
@@ -103,6 +107,13 @@ export type OutboxEntry =
   | {
       op: 'delete_list';
       list_id: string;
+      ts: string;
+      seq?: number;
+    }
+  // feature-003 — full household-wide ordering, one op (schema v3)
+  | {
+      op: 'reorder_lists';
+      order: string[]; // every live list id, new sequence
       ts: string;
       seq?: number;
     };

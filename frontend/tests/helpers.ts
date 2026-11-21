@@ -82,6 +82,7 @@ export function seedList(overrides: Partial<List> = {}): List {
     created_at: overrides.created_at ?? now,
     tombstone: overrides.tombstone ?? false,
     rev: overrides.rev ?? 10,
+    sort_order: overrides.sort_order ?? 0, // feature-003 (schema v3)
   };
 }
 

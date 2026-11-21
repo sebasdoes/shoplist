@@ -36,8 +36,9 @@ export const userStore = writable<{ sub: string; name: string } | null>(null); /
 export { activeListId, setActiveList };
 
 /** The active List object (or null on a fresh device pre-pull). */
-export const activeList = derived([listsStore, activeListId], ([lists, id]) =>
-  lists.find((l) => l.id === id && !l.tombstone) ?? null,
+export const activeList = derived(
+  [listsStore, activeListId],
+  ([lists, id]) => lists.find((l) => l.id === id && !l.tombstone) ?? null,
 );
 
 /** The single list: active, not tombstoned. Unticked queue first (newest on
@@ -58,6 +59,18 @@ const byOccurredDesc = (a: HistoryEntry, b: HistoryEntry) =>
   b.occurred_at.localeCompare(a.occurred_at);
 
 export const historySorted = derived(historyStore, (h) => [...h].sort(byOccurredDesc));
+
+/** feature-003 — canonical drawer order: (sort_order asc, created_at asc).
+ * Pre-v3 rows (sort_order missing on disk) read as 0, so they keep their
+ * created_at order. Ties on both fall back to id for a stable sequence. */
+export function sortListsForDisplay(lists: List[]): List[] {
+  return [...lists].sort(
+    (a, b) =>
+      (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+      a.created_at.localeCompare(b.created_at) ||
+      a.id.localeCompare(b.id),
+  );
+}
 
 /** X-deleted entries stay hidden until the server confirms (or undo — T033). */
 const pendingDeletes = writable<Set<string>>(new Set());
@@ -193,14 +206,15 @@ function validateListName(raw: string): { name: string; err: string | null } {
 }
 
 /** '+ New list' (T009): persists locally FIRST, then queues create_list. */
-export async function createList(
-  input: string,
-  opts: { createdBy?: string } = {},
-): Promise<List> {
+export async function createList(input: string, opts: { createdBy?: string } = {}): Promise<List> {
   const { name, err } = validateListName(input);
   if (err) throw new Error(err);
 
   const now = new Date().toISOString();
+  // feature-003: seed the new list at the END of the current order (max+1),
+  // mirroring the v3 server's create_list rule.
+  const allLists = await db.getAllLists();
+  const nextSortOrder = allLists.reduce((m, l) => Math.max(m, l.sort_order ?? 0), -1) + 1;
   const list: List = {
     id: uuid(),
     name,
@@ -208,6 +222,7 @@ export async function createList(
     created_at: now,
     tombstone: false,
     rev: 0,
+    sort_order: nextSortOrder,
   };
 
   // 1. persist BEFORE network (constitution I), 2. queue the mutation,
@@ -245,9 +260,7 @@ export async function deleteList(id: string): Promise<void> {
   if (liveLists.length <= 1) throw new Error('cannot delete the last list');
 
   // cascade: tombstone the list + every live item of that list
-  const items = (await db.getAllItems()).filter(
-    (i) => i.list_id === id && !i.tombstone,
-  );
+  const items = (await db.getAllItems()).filter((i) => i.list_id === id && !i.tombstone);
   const now = new Date().toISOString();
   await db.putList({ ...list, tombstone: true });
   for (const item of items) {
@@ -295,6 +308,40 @@ export async function undoDeleteList(id: string): Promise<void> {
   // no reconcile: the undone list is live again; keep whatever selection the
   // delete fell back to unless it no longer exists
   await reconcileActiveList();
+}
+
+// ---- feature-003: household-wide list reordering (up/down arrows) ----
+
+/** Optimistic reorder: rebuild the full ordered id array client-side, apply
+ * the new sort_order to IndexedDB IMMEDIATELY (offline-first, constitution I),
+ * then enqueue ONE `reorder_lists` mutation that propagates household-wide.
+ * Ids the caller omitted (or unknown/tombstoned ids) keep their current
+ * display order and are appended so the op always covers every live list. */
+export async function reorderLists(orderedIds: string[]): Promise<void> {
+  const live = (await db.getAllLists()).filter((l) => !l.tombstone);
+  const liveIds = new Set(live.map((l) => l.id));
+
+  const seen = new Set<string>();
+  const order: string[] = [];
+  for (const id of orderedIds) {
+    if (liveIds.has(id) && !seen.has(id)) {
+      order.push(id);
+      seen.add(id);
+    }
+  }
+  for (const l of sortListsForDisplay(live)) {
+    if (!seen.has(l.id)) order.push(l.id);
+  }
+  if (order.length <= 1) return;
+
+  const rank = new Map(order.map((id, i) => [id, i] as const));
+  const rows: List[] = live.map((l) => ({ ...l, sort_order: rank.get(l.id) as number }));
+  // 1. persist BEFORE any network (constitution I), 2. queue the op.
+  await db.putLists(rows);
+  await db.enqueueOutbox({ op: 'reorder_lists', order, ts: new Date().toISOString() });
+  await reloadLists();
+  void requestBackgroundSync();
+  schedulePostMutationSync();
 }
 
 // ---- US2: check-off + trip ----

@@ -83,6 +83,8 @@ async function flushOutbox(): Promise<void> {
       if (e.op === 'upsert_item') return { op: 'upsert_item', item: e.item };
       if (e.op === 'trip') return { op: 'trip', trip: e.trip };
       if (e.op === 'create_list') return { op: 'create_list', list: e.list };
+      // feature-003 — the full ordered id array rides as ONE op (schema v3)
+      if (e.op === 'reorder_lists') return { op: 'reorder_lists', order: e.order };
       return { op: 'delete_list', list_id: e.list_id };
     }),
   });
@@ -98,6 +100,9 @@ async function flushOutbox(): Promise<void> {
       name: al.name,
       rev: al.rev,
       tombstone: al.tombstone,
+      // feature-003: the v3 echo carries sort_order — persist it (order is
+      // household-wide truth; pre-v3 rows keep whatever they had).
+      sort_order: al.sort_order ?? existing?.sort_order ?? 0,
       created_by: existing?.created_by ?? null,
       created_at: existing?.created_at ?? '',
     });
@@ -126,6 +131,14 @@ async function flushOutbox(): Promise<void> {
     }
     if (entry.op === 'delete_list') {
       if (appliedLists === undefined || appliedListIds.has(entry.list_id)) {
+        seqsDone.push(entry.seq);
+      }
+      continue;
+    }
+    if (entry.op === 'reorder_lists') {
+      // feature-003 — confirmed by the applied.lists echo (whose adoption
+      // above also re-persists the server's sort_order on every row).
+      if (appliedLists === undefined || appliedLists.length > 0) {
         seqsDone.push(entry.seq);
       }
       continue;
@@ -234,6 +247,9 @@ export async function pullChanges(): Promise<void> {
       name: l.name,
       rev: l.rev,
       tombstone: l.tombstone,
+      // feature-003: pull rows carry sort_order (schema v3) — persist it;
+      // absent (pre-v3 server) → keep the local value, else 0.
+      sort_order: l.sort_order ?? existing?.sort_order ?? 0,
       created_by: existing?.created_by ?? null,
       created_at: existing?.created_at ?? '',
     });

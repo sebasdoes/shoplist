@@ -69,7 +69,13 @@ def test_create_list_applies_and_pulls(client, auth):
     headers = auth()
     body = make_list(client, headers)
     entry = body["applied"]["lists"][0]
-    assert entry == {"id": LIST_A, "name": "Winkelpad A", "rev": entry["rev"], "tombstone": False}
+    assert entry == {
+        "id": LIST_A,
+        "name": "Winkelpad A",
+        "rev": entry["rev"],
+        "tombstone": False,
+        "sort_order": 1,  # after the seeded default list (v3: create_list = max+1)
+    }
     assert isinstance(entry["rev"], int) and entry["rev"] >= 1
 
     data = pull(client, headers)
@@ -342,3 +348,158 @@ def test_staple_readd_stays_on_same_list(client, auth):
     rows = items_by_id(pull(client, headers))
     assert rows[readded[0]["id"]]["list_id"] == LIST_A
     assert rows[readded[0]["id"]]["status"] == "active"
+
+
+# --- reorder_lists (feature 003, schema v3) -----------------------------------
+
+
+def reorder_mut(order):
+    return {"op": "reorder_lists", "order": order}
+
+
+def sort_orders(client, headers):
+    data = pull(client, headers)
+    return {x["id"]: x["sort_order"] for x in data["lists"]}
+
+
+def test_pull_list_rows_carry_sort_order(client, auth):
+    headers = auth()
+    make_list(client, headers)
+    data = pull(client, headers)
+    lists = {x["id"]: x for x in data["lists"]}
+    assert lists[DEFAULT_LIST]["sort_order"] == 0
+    assert lists[LIST_A]["sort_order"] == 1
+
+
+def test_create_list_assigns_max_plus_one(client, auth):
+    headers = auth()
+    make_list(client, headers)
+    push(client, headers, [create_list_mut(LIST_B, "B")])
+    assert sort_orders(client, headers) == {DEFAULT_LIST: 0, LIST_A: 1, LIST_B: 2}
+    # max counts tombstoned rows too — the freed slot is not reused
+    assert push(client, headers, [delete_list_mut(LIST_A)]).status_code == 200
+    fresh_id = str(uuid.uuid4())
+    r = push(client, headers, [create_list_mut(fresh_id, "C")])
+    assert r.status_code == 200
+    assert r.json()["applied"]["lists"][0]["sort_order"] == 3
+    assert sort_orders(client, headers)[fresh_id] == 3
+
+
+def test_reorder_lists_sets_sequential_sort_orders(client, auth):
+    headers = auth()
+    make_list(client, headers)
+    push(client, headers, [create_list_mut(LIST_B, "B")])
+
+    r = push(client, headers, [reorder_mut([LIST_B, LIST_A, DEFAULT_LIST])])
+    assert r.status_code == 200, r.text
+    applied = r.json()["applied"]["lists"]
+    assert [(x["id"], x["sort_order"]) for x in applied] == [
+        (LIST_B, 0),
+        (LIST_A, 1),
+        (DEFAULT_LIST, 2),
+    ]
+    # each reordered row carries a fresh (bumped) rev
+    assert all(isinstance(x["rev"], int) and x["rev"] >= 1 for x in applied)
+    revs = {x["id"]: x["rev"] for x in applied}
+
+    # pull rows adopt the new order (id, sort_order and bumped rev)
+    pulled = {x["id"]: x for x in pull(client, headers)["lists"]}
+    assert {i: x["sort_order"] for i, x in pulled.items()} == {
+        LIST_B: 0,
+        LIST_A: 1,
+        DEFAULT_LIST: 2,
+    }
+    assert {i: x["rev"] for i, x in pulled.items() if i in revs} == revs
+
+    # bumped revs make the reorder propagate as a watermark delta
+    watermark = pull(client, auth(sub="user-b"), 0)["watermark"]
+    # re-apply a different order to produce a delta after the old watermark
+    r = push(client, headers, [reorder_mut([DEFAULT_LIST, LIST_A, LIST_B])])
+    assert r.status_code == 200
+    delta = pull(client, auth(sub="user-b"), watermark)
+    delta_lists = {x["id"]: x for x in delta["lists"]}
+    assert set(delta_lists) == {DEFAULT_LIST, LIST_A, LIST_B}
+    assert delta_lists[LIST_B]["sort_order"] == 2
+    assert delta_lists[DEFAULT_LIST]["sort_order"] == 0
+    assert all(isinstance(x["rev"], int) for x in delta_lists.values())
+
+
+def test_reorder_lists_bumps_revs_for_sse_and_pull(client, auth):
+    headers = auth()
+    make_list(client, headers)
+    before = {x["id"]: x["rev"] for x in pull(client, headers)["lists"]}
+    watermark = pull(client, auth(sub="user-b"))["watermark"]
+
+    r = push(client, headers, [reorder_mut([LIST_A, DEFAULT_LIST])])
+    assert r.status_code == 200
+    assert all(
+        x["rev"] > before[x["id"]]
+        for x in r.json()["applied"]["lists"]
+    )
+    # offline device sees the reorder in its watermark delta
+    delta = pull(client, auth(sub="user-b"), watermark)
+    delta_lists = {x["id"]: x for x in delta["lists"]}
+    assert {i: x["sort_order"] for i, x in delta_lists.items()} == {DEFAULT_LIST: 1, LIST_A: 0}
+
+
+def test_reorder_lists_unknown_id_400_and_rollback(client, auth):
+    headers = auth()
+    make_list(client, headers)
+    push(client, headers, [create_list_mut(LIST_B, "B")])
+    before_orders = sort_orders(client, headers)
+    before_revs = {x["id"]: x["rev"] for x in pull(client, headers)["lists"]}
+
+    ghost = str(uuid.uuid4())
+    r = push(client, headers, [reorder_mut([DEFAULT_LIST, ghost, LIST_A])])
+    assert r.status_code == 400
+    # whole-batch rollback: previous order AND revs intact
+    assert sort_orders(client, headers) == before_orders
+    assert {x["id"]: x["rev"] for x in pull(client, headers)["lists"]} == before_revs
+
+
+def test_reorder_lists_tombstoned_id_400(client, auth):
+    headers = auth()
+    make_list(client, headers)
+    assert push(client, headers, [delete_list_mut(LIST_A)]).status_code == 200
+    before_orders = sort_orders(client, headers)
+    r = push(client, headers, [reorder_mut([DEFAULT_LIST, LIST_A])])
+    assert r.status_code == 400
+    assert sort_orders(client, headers) == before_orders
+
+
+def test_reorder_lists_mixed_batch_rolls_back_atomically(client, auth):
+    headers = auth()
+    make_list(client, headers)
+    item_id = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=item_id)])
+    watermark = pull(client, headers)["watermark"]
+
+    ghost = str(uuid.uuid4())
+    r = push(
+        client,
+        headers,
+        [reorder_mut([DEFAULT_LIST, ghost]), item_mut(id=str(uuid.uuid4()), name="nieuw")],
+    )
+    assert r.status_code == 400
+    data = pull(client, headers, watermark)  # nothing from the batch landed
+    assert data["items"] == []
+    assert data["lists"] == []
+
+
+def test_reorder_lists_invalid_payload_422(client, auth):
+    headers = auth()
+    assert push(client, headers, [{"op": "reorder_lists"}]).status_code == 422  # missing payload
+    assert push(client, headers, [reorder_mut([])]).status_code == 422  # empty order
+    assert push(client, headers, [reorder_mut(["not-a-uuid"])]).status_code == 422
+    assert push(client, headers, [reorder_mut([DEFAULT_LIST, DEFAULT_LIST])]).status_code == 422
+
+
+def test_reorder_lists_is_idempotent_retry(client, auth):
+    """Re-sending the same order (outbox retry) is a success, re-bumping revs."""
+    headers = auth()
+    make_list(client, headers)
+    push(client, headers, [create_list_mut(LIST_B, "B")])
+    mut = reorder_mut([LIST_B, LIST_A, DEFAULT_LIST])
+    assert push(client, headers, [mut]).status_code == 200
+    assert push(client, headers, [mut]).status_code == 200
+    assert sort_orders(client, headers) == {LIST_B: 0, LIST_A: 1, DEFAULT_LIST: 2}
