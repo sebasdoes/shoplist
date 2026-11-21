@@ -1,0 +1,16 @@
+# Build context = repo root (server/Dockerfile consumes server/ + frontend/).
+.git
+specs/
+deploy/
+.github/
+server/.venv
+server/tests
+server/.pytest_cache
+server/.ruff_cache
+server/.env
+server/*.db*
+frontend/node_modules
+frontend/dist
+frontend/tests
+**/__pycache__
+**/.env

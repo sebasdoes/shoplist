@@ -1,0 +1,36 @@
+# Shoplist sync server (self-hosted shared grocery list) — local-infra quadlet.
+# Image: ghcr.io/sebasdoes/shoplist-server (PUBLIC — no podman login needed).
+# Serves the PWA + API in one container; Pocket ID (public PKCE client) is the
+# only gate, so keep the published port off any network beyond your own.
+#
+# Prerequisites:
+#   mkdir -p /var/containerdata/shoplist
+#   chown 1000:1000 /var/containerdata/shoplist
+#     (image runs as uid 1000; unchowned dir = SQLite "unable to open
+#     database file" at startup — verified hit)
+#   If you browse this UI from any origin OTHER than https://shoplist.example.com
+#   or http://localhost:5173 (e.g. http://10.0.20.2:8643), that origin must be a
+#   registered Pocket ID callbackURL before login works — add it via the Pocket
+#   ID admin UI or API on sso.example.com (client "Shoplist").
+#   Adjust PublishPort if 8643 is occupied on the node.
+
+[Unit]
+Description=Shoplist (offline-first shared grocery list: sync server + PWA)
+
+[Container]
+ContainerName=shoplist
+Image=ghcr.io/sebasdoes/shoplist-server:latest
+AutoUpdate=registry
+PublishPort=8643:8000
+Volume=/var/containerdata/shoplist:/data:Z
+Environment=TZ=Europe/Amsterdam
+Environment=OIDC_ISSUER=https://sso.example.com
+Environment=OIDC_AUDIENCE=abac6ecf-d312-4ed1-a3f8-46e5958a0fe8
+Environment=SHOPLIST_DB=/data/shoplist.db
+Environment=SERVE_FRONTEND_DIR=/srv/static
+
+[Service]
+Restart=unless-stopped
+
+[Install]
+WantedBy=multi-user.target

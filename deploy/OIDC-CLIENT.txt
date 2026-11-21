@@ -1,0 +1,6 @@
+Pocket ID OIDC client "Shoplist" (values scrubbed from this public repo; the
+real issuer/client_id/callbacks live in the operator's own records)
+client_id (OIDC_AUDIENCE): abac6ecf-d312-4ed1-a3f8-46e5958a0fe8
+public client, PKCE required, skipConsent: true
+callbacks at the real SSO/app URLs; dev callback http://localhost:5173
+no client secret exists (public client design)
