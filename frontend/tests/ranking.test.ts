@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rankSuggestions } from '../src/lib/rank';
+import { rankSuggestions, searchHistory } from '../src/lib/rank';
 import type { HistoryEntry } from '../src/lib/db';
 
 const DAY = 86_400_000;
@@ -94,5 +94,33 @@ describe('quick-add ranking (T033)', () => {
     // daysSince NaN → score NaN; ensure it does not crash ordering
     expect(ranked).toHaveLength(1);
     expect(ranked[0].historyIds.length).toBe(1);
+  });
+});
+
+describe('type-to-search (feature-006 add-bar)', () => {
+  it("'big' finds 'Big American Texas' as a prefix match", () => {
+    const hits = searchHistory(
+      [entry({ name: 'Big American Texas', quantity: '2x' }), entry({ name: 'Melk' })],
+      'big',
+      NOW,
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].name).toBe('Big American Texas');
+    expect(hits[0].quantity).toBe('2x');
+  });
+
+  it("substring 'americ' matches without prefix, case-insensitive", () => {
+    const hits = searchHistory([entry({ name: 'Big American Texas' })], 'AMERIC', NOW);
+    expect(hits).toHaveLength(1);
+  });
+
+  it('empty/blank query → no matches', () => {
+    expect(searchHistory([entry({ name: 'Melk' })], '   ', NOW)).toHaveLength(0);
+  });
+
+  it('excludes names already active on the list', () => {
+    const melk = entry({ name: 'Melk' });
+    const exclude = new Set([melk.name.toLowerCase()]);
+    expect(searchHistory([melk], 'mel', NOW, exclude)).toHaveLength(0);
   });
 });

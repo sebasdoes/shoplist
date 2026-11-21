@@ -63,3 +63,24 @@ export function rankSuggestions(
     return a.lastOccurredAt < b.lastOccurredAt ? 1 : a.lastOccurredAt > b.lastOccurredAt ? -1 : 0;
   });
 }
+
+/** feature-006 — type-to-search: history matches for a partial query.
+ *  'big' → 'Big American Texas'. Query matches the NORMALIZED name (name_key),
+ *  so accents/case/punctuation don't block hits. Prefix matches rank above
+ *  substring matches; inside each group the decayed-frequency order holds. */
+export function searchHistory(
+  history: HistoryEntry[],
+  query: string,
+  nowMs: number,
+  excludeNameKeys: Set<string> = new Set(),
+): Suggestion[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const prefix: Suggestion[] = [];
+  const substring: Suggestion[] = [];
+  for (const s of rankSuggestions(history, nowMs, excludeNameKeys)) {
+    if (s.nameKey.toLowerCase().startsWith(q)) prefix.push(s);
+    else if (s.nameKey.toLowerCase().includes(q)) substring.push(s);
+  }
+  return [...prefix, ...substring];
+}
