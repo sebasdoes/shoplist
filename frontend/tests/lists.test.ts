@@ -241,8 +241,10 @@ describe('lists (T006–T011)', () => {
         push: (body) => {
           pushBody = body;
           return {
-            applied: [],
-            lists: [{ id: list.id, name: 'Winkelpad A', rev: 70, tombstone: false }],
+            applied: {
+              items: [],
+              lists: [{ id: list.id, name: 'Winkelpad A', rev: 70, tombstone: false }],
+            },
           };
         },
         pull: () => ({ watermark: 70, items: [], history: [] }),
