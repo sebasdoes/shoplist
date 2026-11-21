@@ -1,0 +1,5 @@
+Pocket ID OIDC client "Shoplist" (created 2026-11-21)
+client_id (OIDC_AUDIENCE): abac6ecf-d312-4ed1-a3f8-46e5958a0fe8
+public client, PKCE required, skipConsent: true
+callbackURLs: https://shoplist.v.akiha.nl, http://localhost:5173
+no client secret exists (public client design)
