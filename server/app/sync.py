@@ -99,8 +99,12 @@ def top_insert_sort_order(conn: sqlite3.Connection, list_id: str) -> int:
     return (minimum if minimum is not None else 0) - 1
 
 
-def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> Applied:
-    """Apply one pushed item mutation (in-order, inside the push transaction)."""
+def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> list[Applied]:
+    """Apply one pushed item mutation (in-order, inside the push transaction).
+
+    Dedupe merges return TWO applied rows: the retired row keyed by the
+    CLIENT's submitted id (merged_into -> survivor, so the submitting device
+    can confirm) plus the survivor row (fresh rev)."""
     require_live_list(conn, item.list_id)  # unknown/tombstoned → 400, batch rolls back
     fields = item.provided_fields()
     existing = _fetch_row(conn, item.id)
@@ -108,7 +112,7 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
     if existing is not None:
         if existing["tombstone"]:
             # Tombstone precedence: a deleted row never resurrects; concurrent edits lose.
-            return _fetch_applied(existing, None)
+            return [_fetch_applied(existing, None)]
 
         is_delete = "tombstone" in fields and item.tombstone is True
         new_key = name_key(item.name) if "name" in fields else None
@@ -131,15 +135,25 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
                 skip_name=True,  # the survivor keeps its display form; identity is the name_key
             )
             # Retire the pushed row so the fold propagates to other devices.
+            retired_rev = db.next_rev(conn)
             conn.execute(
                 "UPDATE items SET tombstone = 1, updated_at = ?, rev = ? WHERE id = ?",
-                (now, db.next_rev(conn), item.id),
+                (now, retired_rev, item.id),
             )
+            # Echo BOTH rows: the retired row keyed by the CLIENT's submitted id
+            # (with merged_into -> survivor) is how the submitting device can
+            # even FIND its merge confirmation — without it the client re-pushes
+            # forever (seen live: an 'AVG' add echoing only the survivor never
+            # confirmed and retried every 2 s, inflating revs each pass).
+            retired_row = _fetch_row(conn, item.id)
             survivor_row = _fetch_row(conn, survivor["id"])
-            return _fetch_applied(survivor_row, survivor["id"])
+            applied_merge = [_fetch_applied(retired_row, survivor["id"])]
+            if survivor_row["id"] != retired_row["id"]:
+                applied_merge.append(_fetch_applied(survivor_row, None))
+            return applied_merge
 
         _apply_fields(conn, item_id=item.id, fields=fields, item=item, user=user, skip_name=False)
-        return _fetch_applied(_fetch_row(conn, item.id), None)
+        return [_fetch_applied(_fetch_row(conn, item.id), None)]
 
     # New row from the server's perspective.
     is_delete = "tombstone" in fields and item.tombstone is True
@@ -155,8 +169,24 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
                 user=user,
                 skip_name=True,
             )
+            # The client-submitted id has no server row yet — create the tombstone
+            # so (a) the echo can be KEYED to the submitted id (client confirm) and
+            # (b) the fold propagates to other devices.
+            tomb_rev = db.next_rev(conn)
+            stamp = db.stamp()
+            conn.execute(
+                "INSERT INTO items (id, name, name_key, quantity, note, status, staple, "
+                "created_by, created_at, updated_at, rev, tombstone, list_id) VALUES "
+                "(?, ?, ?, NULL, NULL, 'active', 0, ?, ?, ?, ?, 1, ?)",
+                (item.id, item.name, name_key(item.name), user.subject, stamp,
+                 stamp, tomb_rev, item.list_id),
+            )
+            retired_row = _fetch_row(conn, item.id)
             survivor_row = _fetch_row(conn, survivor["id"])
-            return _fetch_applied(survivor_row, survivor["id"])
+            applied_merge = [_fetch_applied(retired_row, survivor["id"])]
+            if survivor_row["id"] != retired_row["id"]:
+                applied_merge.append(_fetch_applied(survivor_row, None))
+            return applied_merge
     elif not is_delete:
         raise SyncError("name required after trim, 1–200 chars", 422)
 
@@ -187,7 +217,7 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
             sort_order,
         ),
     )
-    return _fetch_applied(_fetch_row(conn, item.id), None)
+    return [_fetch_applied(_fetch_row(conn, item.id), None)]
 
 
 def _apply_fields(
@@ -392,6 +422,8 @@ def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> Push
     conn.execute("BEGIN IMMEDIATE")
     try:
         db.upsert_user(conn, user.subject, user.name)
+        import json as _json
+        print("[push-body] " + _json.dumps(request.model_dump())[:900], flush=True)
         rejected: list[RejectedMutation] = []
         for index, mutation in enumerate(request.mutations):
             # Per-mutation isolation (feature-004 fix): one poison mutation (e.g.
@@ -401,7 +433,7 @@ def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> Push
             try:
                 if mutation.op == "upsert_item":
                     assert mutation.item is not None  # enforced by the model validator
-                    applied.append(upsert_apply(conn, mutation.item, user))
+                    applied.extend(upsert_apply(conn, mutation.item, user))
                 elif mutation.op == "create_list":
                     assert mutation.list is not None
                     applied_lists.append(apply_create_list(conn, mutation.list, user))

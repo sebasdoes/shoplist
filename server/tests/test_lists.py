@@ -283,8 +283,10 @@ def test_dedupe_merge_scoped_to_list(client, auth):
     rows = items_by_id(pull(client, headers))
     assert rows[in_default]["tombstone"] == 0  # untouched cross-list
     assert rows[in_a]["tombstone"] == 0
-    # the pushed dupe never became a row — it folded straight into the survivor
-    assert dupe not in rows
+    # contract update: the pushed dupe is now recorded as a TOMBSTONED row
+    # (fold propagates to other devices + the client can confirm by its id);
+    # it must NOT be live.
+    assert rows[dupe]["tombstone"] == 1
 
 
 # --- trip scoping ---------------------------------------------------------------
