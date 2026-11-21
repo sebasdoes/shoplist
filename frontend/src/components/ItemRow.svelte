@@ -85,7 +85,7 @@
     color: var(--brand);
     font-weight: 600;
     font-size: 0.85rem;
-    background: #eef4f0;
+    background: var(--surface-2);
     border-radius: 999px;
     padding: 0.1rem 0.55rem;
   }
@@ -94,7 +94,7 @@
     font-size: 0.85rem;
   }
   .staple {
-    color: #d99a17;
+    color: var(--warn);
     font-size: 0.85rem;
   }
   .ticked .name {
@@ -103,6 +103,6 @@
   }
   .ticked {
     opacity: 0.75;
-    background: #efede6;
+    background: var(--surface);
   }
 </style>

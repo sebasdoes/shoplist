@@ -55,7 +55,7 @@
     flex-wrap: wrap;
     align-items: baseline;
     gap: 0.4rem;
-    background: #eef4f0;
+    background: var(--surface-2);
     border: 1px solid var(--line);
     color: var(--ink);
     border-radius: 999px;
@@ -73,7 +73,7 @@
     font-size: 0.8rem;
   }
   .staple {
-    color: #d99a17;
+    color: var(--warn);
     font-size: 0.8rem;
   }
   .empty-hint {

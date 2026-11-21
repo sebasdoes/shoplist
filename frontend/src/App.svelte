@@ -113,7 +113,13 @@
   <div class="center-screen"><p>Shoplist…</p><p class="build-id">{buildId().slice(0, 7)}</p></div>
 {:else if auth === 'signedOut'}
   <div class="center-screen">
-    <h1>Shoplist</h1>
+    <span class="brand-logo" aria-label="Shoplist">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5.5 9h13l-1.2 8.6a2.8 2.8 0 0 1-2.8 2.4H9.5a2.8 2.8 0 0 1-2.8-2.4L5.5 9Z" />
+        <path d="M9 9 12 3.5 15 9" />
+        <path d="M9.7 12.5v4.6M12 12.5v4.6M14.3 12.5v4.6" />
+      </svg>
+    </span>
     <p>One shared grocery list for the household.</p>
     <button class="btn-primary" onclick={() => void doSignIn()}>Sign in</button>
     {#if signInError}
@@ -126,7 +132,13 @@
   {/if}
 
   <header class="app-header">
-    <h1>Shoplist</h1>
+    <span class="brand-logo" aria-label="Shoplist">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5.5 9h13l-1.2 8.6a2.8 2.8 0 0 1-2.8 2.4H9.5a2.8 2.8 0 0 1-2.8-2.4L5.5 9Z" />
+        <path d="M9 9 12 3.5 15 9" />
+        <path d="M9.7 12.5v4.6M12 12.5v4.6M14.3 12.5v4.6" />
+      </svg>
+    </span>
     {#if $userStore}
       <span class="user">{$userStore.name}</span>
       <button class="btn-ghost" onclick={signOut}>Sign out</button>
@@ -146,9 +158,6 @@
   <div class="footer-actions">
     <button class="btn-ghost" onclick={() => (historyOpen = true)}>History</button>
     <button class="btn-primary" onclick={() => (tripSheetOpen = true)}>Trip done</button>
-    <span class="user">
-      {tickedCount} ticked
-    </span>
   </div>
 
   {#if editing}

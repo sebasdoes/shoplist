@@ -175,11 +175,13 @@ function extractClaims(t: TokenResponse): Record<string, unknown> {
 async function saveTokens(t: TokenResponse): Promise<Session> {
   const claims = extractClaims(t);
   const sub = String(claims.sub ?? '');
-  const name =
+  const raw =
     (typeof claims.name === 'string' && claims.name) ||
     (typeof claims.preferred_username === 'string' && claims.preferred_username) ||
     sub ||
     'Household member';
+  // First name only: the list header shows who's shopping, not their full name.
+  const name = raw.includes('@') ? raw.split('@')[0].split('.')[0] : raw.trim().split(/\s+/)[0] || raw;
   // Client clock is only used to decide when to *proactively* refresh;
   // ordering/conflicts remain server-stamped (constitution IV).
   const exp =
