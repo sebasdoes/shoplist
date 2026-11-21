@@ -83,6 +83,13 @@ export function randomCodeVerifier(): string {
   return base64UrlEncodeBytes(bytes);
 }
 
+/** OIDC state: required by Pocket ID (>= 8 chars); doubles as CSRF guard. */
+export function randomState(): string {
+  const bytes = new Uint8Array(24); // 32 base64url chars
+  crypto.getRandomValues(bytes);
+  return base64UrlEncodeBytes(bytes);
+}
+
 export async function pkceChallengeS256(verifier: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
   return base64UrlEncodeBytes(new Uint8Array(digest));
@@ -105,6 +112,7 @@ export function decodeJwtPayload(jwt: string): Record<string, unknown> {
 export function buildAuthorizeUrl(
   endpoints: Endpoints,
   challenge: string,
+  state: string,
   redirectUri = config.redirectUri,
   clientId = config.oidcClientId,
   scopes = config.oidcScopes,
@@ -114,17 +122,22 @@ export function buildAuthorizeUrl(
   url.searchParams.set('client_id', clientId);
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('scope', scopes);
+  url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
   return url.toString();
 }
 
+const STATE_KEY = 'oidc_state';
+
 export async function startLogin(): Promise<void> {
   const verifier = randomCodeVerifier();
+  const state = randomState();
   await db.setState(VERIFIER_KEY, verifier);
+  await db.setState(STATE_KEY, state);
   const challenge = await pkceChallengeS256(verifier);
   const endpoints = await getEndpoints();
-  const url = buildAuthorizeUrl(endpoints, challenge);
+  const url = buildAuthorizeUrl(endpoints, challenge, state);
   if (typeof location !== 'undefined') {
     location.assign(url);
   }
@@ -203,15 +216,38 @@ export async function completeLoginWithCode(code: string, verifier: string): Pro
   return saveTokens(token);
 }
 
-/** Detects ?code= on the callback URL and completes the flow. Returns true on login. */
+/** Detects ?code= on the callback URL and completes the flow. Returns true on login.
+ * Verifies the OIDC state parameter (CSRF guard); surfaces provider errors. */
 export async function handleRedirectIfPresent(): Promise<boolean> {
   if (typeof location === 'undefined') return false;
   const params = new URLSearchParams(location.search);
+  const oidcError = params.get('error');
+  if (oidcError) {
+    const msg = `oidc_error ${oidcError}: ${params.get('error_description') ?? ''}`;
+    console.error(msg);
+    void import('./log').then((m) => m.logBreadcrumb(msg));
+    if (typeof history !== 'undefined') {
+      history.replaceState(null, '', location.pathname);
+    }
+    return false;
+  }
   const code = params.get('code');
   if (!code) return false;
+  const expected = await db.getState<string>(STATE_KEY);
+  const returned = params.get('state');
+  if (!expected || !returned || returned !== expected) {
+    void import('./log').then((m) =>
+      m.logBreadcrumb(`state-mismatch returned=${returned ?? 'none'}`),
+    );
+    if (typeof history !== 'undefined') {
+      history.replaceState(null, '', location.pathname);
+    }
+    return false;
+  }
   const verifier = await db.getState<string>(VERIFIER_KEY);
   if (!verifier) return false;
   await completeLoginWithCode(code, verifier);
+  await db.setState(STATE_KEY, null);
   if (typeof history !== 'undefined') {
     history.replaceState(null, '', location.pathname);
   }

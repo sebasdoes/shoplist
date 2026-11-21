@@ -32,8 +32,8 @@ describe('oidc (T009)', () => {
     expect(v).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
-  it('builds an authorize URL with PKCE S256 + required scopes', async () => {
-    const url = oidc.buildAuthorizeUrl(oidc.defaultEndpoints(), CHALLENGE_RFC7636);
+  it('builds an authorize URL with PKCE S256 + state, required scopes', async () => {
+    const url = oidc.buildAuthorizeUrl(oidc.defaultEndpoints(), CHALLENGE_RFC7636, 'teststate123');
     const u = new URL(url);
     expect(u.origin + u.pathname).toBe(config.oidcIssuer + '/authorize');
     expect(u.searchParams.get('client_id')).toBe(config.oidcClientId);
@@ -41,6 +41,28 @@ describe('oidc (T009)', () => {
     expect(u.searchParams.get('code_challenge_method')).toBe('S256');
     expect(u.searchParams.get('code_challenge')).toBe(CHALLENGE_RFC7636);
     expect(u.searchParams.get('scope')).toBe('openid profile email offline_access');
+    expect(u.searchParams.get('state')).toBe('teststate123');
+  });
+
+  it('randomState is long enough for Pocket ID (>= 8 chars)', () => {
+    const s = oidc.randomState();
+    expect(s.length).toBeGreaterThanOrEqual(8);
+    expect(s).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  it('startLogin persists a state that lands in the authorize URL (regression: empty state was rejected)', async () => {
+    await db.setState('oidc_endpoints', oidc.defaultEndpoints());
+    const assigned: string[] = [];
+    const assign = vi.fn((u: string) => assigned.push(u));
+    vi.stubGlobal('location', { assign, search: '', pathname: '/' });
+    vi.stubGlobal('history', { replaceState: vi.fn() });
+    await oidc.startLogin();
+    expect(assigned).toHaveLength(1);
+    const u = new URL(assigned[0]);
+    const persisted = await db.getState<string>('oidc_state');
+    expect(persisted).toBeTruthy();
+    expect(u.searchParams.get('state')).toBe(persisted);
+    expect((persisted as string).length).toBeGreaterThanOrEqual(8);
   });
 
   it('exchanges the code, caches the session in IndexedDB, and exposes the access token', async () => {
