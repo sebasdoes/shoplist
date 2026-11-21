@@ -14,6 +14,7 @@
   } from './lib/stores';
   import { initSyncTriggers, onSyncComplete, runSync } from './lib/sync';
   import { initDb } from './lib/db';
+  import { logBreadcrumb } from './lib/log';
   import { bootstrapServices } from './lib/bootstrap';
   import * as oidc from './lib/oidc';
   import AddBar from './components/AddBar.svelte';
@@ -25,6 +26,7 @@
   type AuthState = 'checking' | 'signedOut' | 'signedIn';
 
   let auth: AuthState = $state('checking');
+  let signInError: string | null = $state(null);
   let editing: Item | null = $state(null);
   let tripSheetOpen = $state(false);
   let historyOpen = $state(false);
@@ -54,6 +56,17 @@
     }
   });
 
+  async function doSignIn(): Promise<void> {
+    signInError = null;
+    try {
+      await oidc.startLogin();
+    } catch (e) {
+      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      signInError = `Sign-in failed: ${msg}`;
+      void logBreadcrumb(`signin-failed ${msg}`);
+    }
+  }
+
   function chipLabel(s: 'idle' | 'syncing' | 'offline' | 'error'): string | null {
     if (s === 'syncing') return 'syncing…';
     if (s === 'error') return 'syncing…'; // quiet; keeps retrying
@@ -80,7 +93,10 @@
   <div class="center-screen">
     <h1>Shoplist</h1>
     <p>One shared grocery list for the household.</p>
-    <button class="btn-primary" onclick={() => void oidc.startLogin()}>Sign in</button>
+    <button class="btn-primary" onclick={() => void doSignIn()}>Sign in</button>
+    {#if signInError}
+      <p class="sync-chip" data-status="error">{signInError}</p>
+    {/if}
   </div>
 {:else}
   {#if status !== 'idle'}
