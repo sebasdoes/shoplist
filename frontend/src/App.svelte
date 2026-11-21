@@ -14,7 +14,7 @@
   } from './lib/stores';
   import { initSyncTriggers, onSyncComplete, runSync } from './lib/sync';
   import { initDb } from './lib/db';
-  import { logBreadcrumb } from './lib/log';
+  import { bootErr, bootStep, buildId } from './lib/diag';
   import { bootstrapServices } from './lib/bootstrap';
   import * as oidc from './lib/oidc';
   import AddBar from './components/AddBar.svelte';
@@ -36,16 +36,20 @@
   const tickedCount = $derived(activeItems.filter((i) => i.ticked).length);
 
   onMount(async () => {
+    bootStep('onmount');
     onSyncComplete(() => {
       void loadStoresFromDb();
     });
     wireStoresToSync();
     await initDb();
+    bootStep('db-opened');
     bootstrapServices();
     try {
       await oidc.handleRedirectIfPresent();
+      bootStep('redirect-handled');
       const token = await oidc.ensureFreshToken(); // silent auth (T012)
       const session = await oidc.getSession();
+      bootStep('auth-resolved');
       if (session) {
         userStore.set({ sub: session.sub, name: session.name }); // T022
         auth = 'signedIn';
@@ -59,7 +63,7 @@
       // Never freeze on "Shoplist…": surface the failure and fall back to
       // whatever IndexedDB already holds (a successful earlier exchange).
       const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-      void logBreadcrumb(`startup-failed ${msg}`);
+      bootErr('startup', msg);
       const fallback = await oidc.getSession().catch(() => null);
       if (fallback) {
         userStore.set({ sub: fallback.sub, name: fallback.name });
@@ -106,7 +110,7 @@
 </script>
 
 {#if auth === 'checking'}
-  <div class="center-screen"><p>Shoplist…</p></div>
+  <div class="center-screen"><p>Shoplist…</p><p class="build-id">{buildId().slice(0, 7)}</p></div>
 {:else if auth === 'signedOut'}
   <div class="center-screen">
     <h1>Shoplist</h1>

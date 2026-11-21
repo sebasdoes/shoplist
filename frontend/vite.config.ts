@@ -3,6 +3,11 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  define: {
+    __BUILD_SHA__: JSON.stringify(
+      process.env.VITE_BUILD_SHA || `local-${new Date().toISOString().slice(0, 16)}`,
+    ),
+  },
   plugins: [
     svelte(),
     VitePWA({
