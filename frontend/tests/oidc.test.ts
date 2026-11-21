@@ -80,7 +80,7 @@ describe('oidc (T009)', () => {
     const session = await oidc.completeLoginWithCode('abc', VERIFIER_RFC7636);
     expect(session.access_token).toBe('at-1');
     expect(session.sub).toBe('user-a');
-    expect(session.name).toBe('User A'); // T022: display name from token claims
+    expect(session.name).toBe('User'); // T022: display name from token claims, FIRST name only
     expect(session.exp).toBeGreaterThan(Date.now() / 1000);
 
     // persisted in the db state store

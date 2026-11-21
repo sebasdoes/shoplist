@@ -1,13 +1,16 @@
 /* Shoplist — constitution VII: fast single-thumb queue. No dashboards. */
+/* Dark by default; high-contrast pairs suit achromatopsia (no color coding). */
 :root {
-  --bg: #f6f4ee;
-  --surface: #ffffff;
-  --ink: #1d2b23;
-  --muted: #6b7a72;
-  --brand: #2f6f4f;
-  --brand-ink: #ffffff;
-  --danger: #a5423a;
-  --line: #e3e0d6;
+  --bg: #121815;
+  --surface: #1b231f;
+  --surface-2: #26302a;
+  --ink: #f2f5f0;
+  --muted: #a8b3ab;
+  --brand: #8ad6a0;
+  --brand-ink: #0f1a12;
+  --danger: #ff9d8e;
+  --warn: #e5c26b;
+  --line: #2b352f;
   --radius: 14px;
 }
 
@@ -47,8 +50,8 @@ textarea {
   top: env(safe-area-inset-top, 0.5rem);
   right: 0.75rem;
   z-index: 40;
-  background: rgba(29, 43, 35, 0.82);
-  color: var(--brand-ink);
+  background: rgba(8, 12, 10, 0.85);
+  color: var(--ink);
   border-radius: 999px;
   padding: 0.25rem 0.75rem;
   font-size: 0.75rem;
@@ -119,8 +122,8 @@ textarea {
   left: 50%;
   bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
-  background: var(--ink);
-  color: var(--brand-ink);
+  background: var(--surface-2);
+  color: var(--ink);
   border-radius: 999px;
   padding: 0.5rem 1rem;
   display: flex;
@@ -133,7 +136,7 @@ textarea {
 .snackbar button {
   background: none;
   border: none;
-  color: #9fe0b8;
+  color: var(--brand);
   font-weight: 600;
 }
 
@@ -162,6 +165,21 @@ textarea {
   border: none;
   color: var(--brand);
   font-weight: 600;
+}
+
+.brand-logo {
+  display: inline-flex;
+  color: var(--brand);
+}
+
+.brand-logo svg {
+  width: 30px;
+  height: 30px;
+}
+
+.build-id {
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .footer-actions {
