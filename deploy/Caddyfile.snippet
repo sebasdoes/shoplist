@@ -1,0 +1,4 @@
+# Add to the Caddyfile on the VPS (then validate + force-recreate — see compose.shoplist.yaml notes).
+shoplist.example.com {
+	reverse_proxy http://shoplist:8000
+}
