@@ -13,6 +13,8 @@ FROM node:22-alpine AS web-builder
 WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
+ARG VITE_BUILD_SHA
+ENV VITE_BUILD_SHA=$VITE_BUILD_SHA
 COPY frontend/ ./
 RUN npm run build
 
