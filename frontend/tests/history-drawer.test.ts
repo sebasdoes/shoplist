@@ -12,14 +12,14 @@ function entry(overrides: Partial<HistoryEntry>): HistoryEntry {
   return {
     id: overrides.id ?? crypto.randomUUID(),
     item_id: overrides.item_id ?? crypto.randomUUID(),
-    list_id: overrides.list_id ?? crypto.randomUUID(),
     name: overrides.name ?? 'Big American Texas',
     quantity: overrides.quantity ?? null,
     note: overrides.note ?? null,
     outcome: overrides.outcome ?? 'bought',
-    staple_snapshot: overrides.staple_snapshot ?? 0,
+    staple_snapshot: overrides.staple_snapshot ?? false,
     actor: overrides.actor ?? 'server',
     occurred_at: overrides.occurred_at ?? now,
+    rev: overrides.rev ?? 1,
   };
 }
 
