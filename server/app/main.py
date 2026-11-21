@@ -93,6 +93,12 @@ def create_app(
     def health() -> dict:
         return {"ok": True}
 
+    @app.get("/api/v1/config")
+    def public_config() -> dict:
+        """Unauthenticated on purpose: the PWA must learn the deploy'd OIDC
+        issuer/audience at runtime (public repo never bakes real URLs)."""
+        return {"issuer": settings.oidc_issuer, "audience": settings.oidc_audience}
+
     serve_dir = settings.serve_frontend_dir
     if serve_dir:
         root = Path(serve_dir)
