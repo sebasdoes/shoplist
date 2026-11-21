@@ -4,7 +4,7 @@
 
 **Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/api.md, quickstart.md, constitution
 
-**Tests**: Included per constitution workflow rule — sync engine, dedupe, and trip transitions get pytest suites written before their implementations (test-driven where it counts). UI verified per quickstart.md.
+**Tests**: Included per constitution workflow rule — sync engine, duplicate-name handling, and trip transitions get pytest suites written before their implementations (test-driven where it counts). UI verified per quickstart.md.
 
 **Path conventions**: monorepo per plan.md — `server/` (FastAPI) and `frontend/` (Svelte PWA). No shared code.
 
@@ -46,22 +46,22 @@
 
 ## Phase 3: User Story 1 — Add items to a shared list that syncs (P1) 🎯 MVP
 
-**Goal**: two users, one truthful list, offline add + auto-sync + dedupe
+**Goal**: two users, one truthful list, offline add + auto-sync + duplicate-name handling (duplicates allowed per constitution v1.3.0)
 
 **Independent Test**: quickstart.md "US1 — shared synced list" steps 1–6
 
 ### Tests for US1 (write FIRST — TDD required by constitution)
 
-- [ ] T015 [P] [US1] Write `server/tests/test_sync.py` (failing): per-field LWW resolution (research D2: quantity edit vs note edit both survive), auto-dedupe on normalized `name_key` (data-model items.name_key rule), tombstone precedence over same-epoch edits, out-of-order push safety, pull watermark incremental + full-snapshot flag at >500 rows (data-model rev field), server-stamped timestamps (client clock ignored)
-- [ ] T016 [P] [US1] Write `server/tests/test_api.py` contract cases: POST /sync/push happy path + `merged_into` response (contracts/api.md), POST /sync/pull shapes, 401 without token, 422 on empty name (data-model.name validation "required after trim, 1–200 chars")
+- [ ] T015 [P] [US1] Write `server/tests/test_sync.py` (failing): per-field LWW resolution (research D2: quantity edit vs note edit both survive), duplicate-name coexistence — a push with an identical normalized `name_key` lands as a NEW independent row, never merged (constitution v1.3.0; `name_key` is a display/search helper only), tombstone precedence over same-epoch edits, out-of-order push safety, pull watermark incremental + full-snapshot flag at >500 rows (data-model rev field), server-stamped timestamps (client clock ignored)
+- [ ] T016 [P] [US1] Write `server/tests/test_api.py` contract cases: POST /sync/push happy path + `merged_into` response = always null (contracts/api.md, wire-compat since constitution v1.3.0), POST /sync/pull shapes, 401 without token, 422 on empty name (data-model.name validation "required after trim, 1–200 chars")
 
 ### Implementation for US1
 
-- [ ] T017 [US1] Implement `server/app/models.py`: pydantic schemas for push/pull/history payloads exactly matching contracts/api.md (UpsertItem, TripMutation, PushRequest, PushResponse.applied + trip + merged_into, PullRequest/Response)
-- [ ] T018 [US1] Implement `server/app/sync.py`: push transaction (in-order upsert_apply with LWW field-set resolution, dedupe merge onto survivor row, tombstone apply) and pull (rev-gated, snapshot flag), `name_key` normalization per research D6 (casefold + trim + collapse whitespace + NFKD diacritic strip)
+- [ ] T017 [US1] Implement `server/app/models.py`: pydantic schemas for push/pull/history payloads exactly matching contracts/api.md (UpsertItem, TripMutation, PushRequest, PushResponse.applied + trip + merged_into — deprecated, always null per v1.3.0, PullRequest/Response)
+- [ ] T018 [US1] Implement `server/app/sync.py`: push transaction (in-order upsert_apply with LWW field-set resolution, tombstone apply; same-name pushes stored as independent rows — no dedupe, no merge, no survivor per constitution v1.3.0) and pull (rev-gated, snapshot flag), `name_key` normalization per research D6 (casefold + trim + collapse whitespace + NFKD diacritic strip) — retained only as a normalized display/search helper (add-bar type-to-search + quick-add aggregation)
 - [ ] T019 [US1] Wire routers `POST /api/v1/sync/push`, `POST /api/v1/sync/pull` in `server/app/main.py` with auth dependency; make T015/T016 pass
-- [ ] T020 [US1] Implement `frontend/src/lib/sync.ts`: outbox flush → push (adopt `applied`, handle `merged_into`, clear pushed) → pull watermark upsert → persist; triggers per contracts/api.md client sync loop (online event, focus, 60 s visible timer, debounced 2 s post-mutation); failure retains outbox + quiet "syncing…" chip, never an error dialog (FR-014)
-- [ ] T021 [US1] Implement `frontend/src/lib/stores.ts` + `frontend/src/components/AddBar.svelte` + minimal `ItemRow.svelte`: list renders from IndexedDB only (no network read path), add bar prepends item locally + queues mutation; write `frontend/tests/sync.test.ts` (outbox ordering, offline queue, dedupe adoption of remote id)
+- [ ] T020 [US1] Implement `frontend/src/lib/sync.ts`: outbox flush → push (adopt `applied`, ignore `merged_into` — always null since constitution v1.3.0, clear pushed) → pull watermark upsert → persist; triggers per contracts/api.md client sync loop (online event, focus, 60 s visible timer, debounced 2 s post-mutation); failure retains outbox + quiet "syncing…" chip, never an error dialog (FR-014)
+- [ ] T021 [US1] Implement `frontend/src/lib/stores.ts` + `frontend/src/components/AddBar.svelte` + minimal `ItemRow.svelte`: list renders from IndexedDB only (no network read path), add bar prepends item locally + queues mutation; write `frontend/tests/sync.test.ts` (outbox ordering, offline queue, duplicate-name pushes stay separate rows — no remote-id adoption, per v1.3.0)
 - [ ] T022 [US1] Two-sign-in support: store + display name from token claims (users table upsert on first-seen per data-model users)
 
 **Checkpoint**: quickstart US1 steps 1–6 pass in two browser windows; all server tests green

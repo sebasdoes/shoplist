@@ -26,13 +26,14 @@ Batch of pending client mutations, applied in order inside one transaction. Retu
 ```json
 // response
 {
-  "applied": [{"id": "uuid", "rev": 142, "updated_at": "...", "merged_into": null | "existing-uuid"}],
+  "applied": [{"id": "uuid", "rev": 142, "updated_at": "...", "merged_into": null}],
   "trip": {"id": "uuid", "duplicate": false, "readded": [{"id": "...", "name": "koffie"}]}
 }
 ```
 
 Semantics:
-- `merged_into` non-null = dedupe hit: the pushed row folded into the existing active item (server returns the survivor; client adopts it).
+- **Amendment (constitution v1.3.0, 2026-11-21)**: `merged_into` is DEPRECATED and is ALWAYS null. The request shape is kept for wire compatibility. The server never merges or folds pushes: same-named rows are independent items; tombstones win; LWW per field.
+- ~~`merged_into` non-null = dedupe hit~~ — historical (v1.0–v1.2): the pushed row used to fold into an existing active item (server returned the survivor and the client adopted it). This machinery was removed; the field is always null now.
 - Trip application is atomic; duplicate trip id → `"duplicate": true`, no effects, client simply clears it from its outbox.
 - Out-of-order pushes are safe: LWW by server-receive time makes ordering irrelevant except that a tombstone always wins over a concurrent field edit of the same revision epoch.
 
@@ -62,7 +63,7 @@ Semantics: returns rows with `rev > watermark` (cap: if the delta exceeds 500 ro
 ## Client sync loop (contract for the frontend)
 
 1. Load IndexedDB snapshot → render instantly, network-independent.
-2. If outbox non-empty and token valid → `POST /sync/push` → adopt `applied`, clear pushed entries, handle `merged_into`.
+2. If outbox non-empty and token valid → `POST /sync/push` → adopt `applied`, clear pushed entries (`merged_into` is always null since constitution v1.3.0 — nothing to adopt).
 3. `POST /sync/pull` with stored watermark → upsert pulled rows → persist new watermark.
 4. Re-run on: connectivity regain (`online` event), app focus, 60 s timer while visible, and after any local mutation (debounced 2 s).
 5. 401 anywhere → silent PKCE re-auth → retry step 2. Failure → outbox retained, UI shows a quiet "syncing…" chip, never an error dialog.

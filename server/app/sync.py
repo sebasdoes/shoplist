@@ -108,14 +108,22 @@ def upsert_apply(conn: sqlite3.Connection, item: UpsertItem, user: AuthUser) -> 
         if existing["tombstone"]:
             # Tombstone precedence: a deleted row never resurrects; concurrent edits lose.
             return [_fetch_applied(existing)]
+        if "name" in fields and (item.name is None or not item.name.strip()):
+            # Explicit null/blank name on an existing row violates the contract
+            # (name required after trim, 1–200 chars) — reject instead of writing
+            # an empty name / tripping NOT NULL.
+            raise SyncError("name required after trim, 1–200 chars", 422)
         # Plain per-field LWW apply (name included — no fold, no skip).
         _apply_fields(conn, item_id=item.id, fields=fields, item=item, user=user)
         return [_fetch_applied(_fetch_row(conn, item.id))]
 
     # New row from the server's perspective — always a plain insert.
     is_delete = "tombstone" in fields and item.tombstone is True
-    if "name" not in fields and not is_delete:
-        raise SyncError("name required after trim, 1–200 chars", 422)
+    if not is_delete:
+        # Contract: name required, trimmed 1–200 chars. A pushed {"name": None}
+        # (or blank) on a NEW row must be REJECTED, not inserted with "".
+        if item.name is None or not item.name.strip():
+            raise SyncError("name required after trim, 1–200 chars", 422)
 
     rev = db.next_rev(conn)
     now = db.stamp()
@@ -381,8 +389,13 @@ def push(conn: sqlite3.Connection, request: PushRequest, user: AuthUser) -> Push
                     f"[push-rejected] index={index} op={mutation.op} {exc.detail}", flush=True
                 )
             except Exception as exc:  # noqa: BLE001 — reject + log, never kill the batch
+                # Never leak internal exception text (e.g. sqlite constraint
+                # messages) to clients — generic detail only; the repr stays in
+                # the server logs below.
                 rejected.append(
-                    RejectedMutation(index=index, op=mutation.op, detail=f"internal error: {exc}")
+                    RejectedMutation(
+                        index=index, op=mutation.op, detail="internal error — see server logs"
+                    )
                 )
                 print(f"[push-error] index={index} op={mutation.op} {exc!r}", flush=True)
         conn.execute("COMMIT")

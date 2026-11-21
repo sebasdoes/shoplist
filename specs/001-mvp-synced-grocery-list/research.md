@@ -44,9 +44,11 @@
 
 **Rationale**: eliminates every partial-trip race (both users pressing it, offline submit + retry).
 
-## D6 — Name normalization for dedupe
+## D6 — Name normalization (amended by constitution v1.3.0, 2026-11-21)
 
-**Decision**: `name_key` = casefold + trim + collapse internal whitespace + strip diacritics (NFKD). Uniqueness enforced on `(name_key, status='active')`; pushing a duplicate merges onto the existing row.
+**Original decision (v1.0–v1.2)**: `name_key` = casefold + trim + collapse internal whitespace + strip diacritics (NFKD). Uniqueness was enforced on `(name_key, status='active')`; pushing a duplicate merged onto the existing row.
+
+**Amended decision (v1.3.0, stakeholder request)**: the uniqueness constraint and the dedupe merge are REMOVED. Identical names coexist as independent rows with independent ids; pushes never fold onto a survivor; the dedupe index was dropped (schema v5). `name_key` is computed exactly as before (casefold + trim + collapse whitespace + NFKD) but is retained ONLY as a normalized display/search helper — add-bar type-to-search matching and quick-add aggregation — never as a uniqueness or merge key.
 
 ## D7 — JWT validation on server
 

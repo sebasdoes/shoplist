@@ -17,7 +17,7 @@ Unchanged from feature 001 (Python 3.12 + FastAPI + SQLite WAL server; Svelte 5 
 | I. No data loss | PASS — migration guarded + tested (SC-006); deletions are tombstones; history survives list deletion |
 | II. Offline-first | PASS — list switching is IndexedDB-only; list ops ride the outbox |
 | III. Lists multiply (amended v1.1.0) | IN SCOPE by amendment; aisles/recipes/sharing/reminders still rejected |
-| IV. Boring conflicts | PASS — same LWW + dedupe, now scoped per list; trip idempotency unchanged |
+| IV. Boring conflicts | PASS — same LWW + tombstone precedence, applied per list; duplicates allowed within a list (constitution v1.3.0 removed auto-dedupe); trip idempotency unchanged |
 | V. Zero user management | PASS — unchanged |
 | VI. Frugal self-hosting | PASS — one table, one column per table, no new services |
 | VII. Queue-style UI | PASS — drawer is a menu, not a dashboard |
@@ -29,7 +29,7 @@ Unchanged from feature 001 (Python 3.12 + FastAPI + SQLite WAL server; Svelte 5 
 ```text
 server/app/db.py        # + migration v1->v2 (user_version gate), idempotent
 server/app/models.py    # + create_list/delete_list ops, list_id on upsert/trip
-server/app/sync.py      # + list ops, per-list dedupe, cascade, trip scoping, pull lists[]
+server/app/sync.py      # + list ops, cascade, trip scoping, pull lists[] (no dedupe — duplicates allowed, v1.3.0)
 server/tests/           # + test_migration2.py, test_lists.py, test_events stays
 frontend/src/lib/db.ts      # + lists store, IDB version bump (resync on change)
 frontend/src/lib/stores.ts  # + lists store, activeList persistence, scoping, bumpQuantity

@@ -1,8 +1,11 @@
 # Build context = repo root (server/Dockerfile consumes server/ + frontend/).
 .git
+.github/
+.specify/
+.claude/
 specs/
 deploy/
-.github/
+scripts_local/
 server/.venv
 server/tests
 server/.pytest_cache
@@ -14,3 +17,4 @@ frontend/dist
 frontend/tests
 **/__pycache__
 **/.env
+*.png

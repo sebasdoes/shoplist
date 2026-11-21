@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Iterator
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
 from . import db, sync
@@ -17,6 +20,20 @@ from .config import Settings, get_settings
 from .history import history_delete, history_list
 from .models import PullRequest, PullResponse, PushRequest, PushResponse
 from .sync import SyncError
+
+# --- /api/v1/log beacon hardening (unauthenticated client diagnostics) ---
+CLIENT_LOG_MAX_CHARS = 500
+CLIENT_LOG_RATE_LIMIT_PER_MIN = 30  # token-bucket capacity, per client IP
+_CLIENT_LOG_REFILL_PER_SEC = CLIENT_LOG_RATE_LIMIT_PER_MIN / 60.0
+# C0/C1 control chars (includes \n, \r, NUL, ESC, U+0085 NEL): neutralized before
+# printing so a client cannot forge log lines (log-forging).
+_CLIENT_LOG_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def sanitize_client_log(msg: str) -> str:
+    """Neutralize control characters/newlines and clamp the message length."""
+    cleaned = _CLIENT_LOG_CONTROL_CHARS.sub(" ", msg)
+    return cleaned[:CLIENT_LOG_MAX_CHARS]
 
 
 def create_app(
@@ -79,7 +96,6 @@ def create_app(
     app.include_router(api)
 
     from fastapi.exceptions import RequestValidationError
-    from fastapi.responses import JSONResponse
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request, exc: RequestValidationError):
@@ -101,11 +117,43 @@ def create_app(
         issuer/audience at runtime (public repo never bakes real URLs)."""
         return {"issuer": settings.oidc_issuer, "audience": settings.oidc_audience}
 
+    # In-process token bucket per client IP for the unauthenticated beacon.
+    log_buckets: dict[str, list[float]] = {}  # ip -> [tokens, last_refill (monotonic)]
+    log_lock = threading.Lock()
+
+    def allow_client_log(ip: str) -> bool:
+        """Coarse rate limit: ~30 requests/min per client IP → False means 429."""
+        now = time.monotonic()
+        with log_lock:
+            entry = log_buckets.get(ip)
+            if entry is None:
+                # First request fills the bucket and consumes immediately:
+                # exactly `capacity` requests pass per window.
+                log_buckets[ip] = [float(CLIENT_LOG_RATE_LIMIT_PER_MIN) - 1.0, now]
+                return True
+            tokens, last = entry
+            tokens = min(
+                float(CLIENT_LOG_RATE_LIMIT_PER_MIN),
+                tokens + (now - last) * _CLIENT_LOG_REFILL_PER_SEC,
+            )
+            if tokens >= 1.0:
+                entry[0], entry[1] = tokens - 1.0, now
+                return True
+            entry[0], entry[1] = tokens, now
+            return False
+
     @app.post("/api/v1/log")
-    def client_log(body: dict) -> dict:
+    def client_log(request: Request, body: dict):
         """Diagnostic beacon: browser-side errors land in the server log.
-        Unauthenticated like /config; stores nothing, prints a truncated line."""
-        msg = str(body.get("msg") or "empty")[:2000]
+        Unauthenticated like /config; stores nothing, prints one truncated line.
+        Hardened: JSON body only (a non-JSON body → 422 via the validation
+        handler), msg clamped to 500 chars, control chars/newlines neutralized
+        (log-forging), and a per-IP ~30 req/min token bucket answering a bare
+        429. The response shape is unchanged: {"ok": true}."""
+        ip = request.client.host if request.client else "unknown"
+        if not allow_client_log(ip):
+            return Response(status_code=429)  # 429 silently — no body
+        msg = sanitize_client_log(str(body.get("msg") or "empty"))
         print(f"[client-log] {msg}", flush=True)
         return {"ok": True}
 

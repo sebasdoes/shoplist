@@ -13,7 +13,7 @@
 ```bash
 # server
 cd server && uv sync && uv run uvicorn app.main:app --reload --port 8000
-# tests (includes the sync/race/dedupe suite — these run BEFORE any UI work)
+# tests (includes the sync/race/duplicate-name suite — these run BEFORE any UI work)
 cd server && uv run pytest -q
 # frontend
 cd frontend && npm install && npm run dev          # http://localhost:5173
@@ -30,7 +30,7 @@ Set `OIDC_ISSUER=https://sso.example.com`, `OIDC_AUDIENCE=<client_id>` in `serve
 3. DevTools → Network → "Offline" on window B; add "theeglas" → renders instantly, no error.
 4. Reload window B (still offline) → item still there (IndexedDB).
 5. Back to "Online" → item reaches the server (check window A / sqlite directly).
-6. Add "melk" offline on both, bring both online → exactly one "melk" (dedupe, US1-4).
+6. Add "melk" offline on both, bring both online → BOTH "melk" rows appear (duplicates coexist, no dedupe — US1-4 per constitution v1.3.0).
 
 **US2 — trip done + staples**:
 

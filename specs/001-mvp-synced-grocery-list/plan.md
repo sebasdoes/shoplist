@@ -6,7 +6,7 @@
 
 ## Summary
 
-A shared household grocery list PWA (User A + User B) that works fully offline and syncs through a small self-hosted FastAPI server on the VPS. Items carry name/quantity/note and a staple flag; "Trip done" archives purchases to history, resolves unticked items with one-tap keep/drop, and re-adds staples with their last quantity/note. Auth is Pocket ID (OIDC public client, PKCE); the server validates JWTs via JWKS. Conflicts resolve with per-field last-write-wins on server-received timestamps and dedupe on normalized names.
+A shared household grocery list PWA (User A + User B) that works fully offline and syncs through a small self-hosted FastAPI server on the VPS. Items carry name/quantity/note and a staple flag; "Trip done" archives purchases to history, resolves unticked items with one-tap keep/drop, and re-adds staples with their last quantity/note. Auth is Pocket ID (OIDC public client, PKCE); the server validates JWTs via JWKS. Conflicts resolve with per-field last-write-wins on server-received timestamps; tombstones win; identical names are allowed to coexist on the same list (auto-dedupe was removed by constitution v1.3.0 — no merge, no survivor).
 
 ## Technical Context
 
@@ -16,7 +16,7 @@ A shared household grocery list PWA (User A + User B) that works fully offline a
 
 **Storage**: SQLite (WAL) server-side; IndexedDB client-side (mirrored subset + outbox + watermark)
 
-**Testing**: pytest (server: sync engine, dedupe, LWW, trip transactions); Vitest + Playwright-lite device-flow checks (client); manual two-browser airplane-mode validation per quickstart.md
+**Testing**: pytest (server: sync engine, LWW, duplicate-name pushes, tombstones, trip transactions); Vitest + Playwright-lite device-flow checks (client); manual two-browser airplane-mode validation per quickstart.md
 
 **Target Platform**: Linux server (VPS, podman/container behind Caddy); Android Chrome PWA clients
 
@@ -70,11 +70,11 @@ server/
 │   ├── auth.py            # JWKS cache + JWT verification dependency
 │   ├── db.py              # SQLite (WAL), migrations, rev sequence
 │   ├── models.py          # pydantic request/response schemas
-│   ├── sync.py            # push/pull: LWW, dedupe, tombstones
+│   ├── sync.py            # push/pull: LWW, tombstones, duplicate names allowed (v1.3.0)
 │   ├── trips.py           # idempotent trip transaction (history, keep/drop, staple re-add)
 │   └── history.py         # history list + hard delete
 └── tests/
-    ├── test_sync.py       # LWW per field, dedupe merge, tombstone precedence, out-of-order
+    ├── test_sync.py       # LWW per field, duplicate-name coexistence (no merge), tombstone precedence, out-of-order
     ├── test_trips.py      # idempotency, atomicity, staple re-add, keep/drop
     ├── test_auth.py       # JWT validation, 401 paths
     └── test_api.py        # contract-level, matches contracts/api.md

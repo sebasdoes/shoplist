@@ -241,3 +241,81 @@ def test_tombstone_propagates_to_offline_devices(client, auth):
     delta = pull(client, offline_headers, watermark, include_history=False).json()
     row = find_by_id(delta["items"], a)
     assert row["tombstone"] == 1
+
+
+# --- name contract + rejected[] detail sanitization (hardening review fixes) ---
+
+
+def test_push_new_item_explicit_null_name_rejected(client, auth):
+    """'name' is required (trimmed 1–200): pushing {"name": None} on a NEW item
+    must be REPORTED in rejected[], not applied as an empty-named row."""
+    headers = auth()
+    item_id = str(uuid.uuid4())
+    r = push(client, headers, [item_mut(id=item_id, name=None)])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["applied"]["items"] == []
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["index"] == 0
+    assert body["rejected"][0]["detail"] == "name required after trim, 1–200 chars"
+
+    # nothing was inserted
+    data = active_items(client, headers, 0)
+    assert all(row["id"] != item_id for row in data["items"])
+
+
+def test_push_existing_item_explicit_null_name_rejected(client, auth):
+    """An explicit null name on an EXISTING row is a SyncError too (reported),
+    and the row keeps its previous name."""
+    headers = auth()
+    item_id = str(uuid.uuid4())
+    push(client, headers, [item_mut(id=item_id, name="karnemelk")])
+
+    r = push(
+        client,
+        headers,
+        [{"op": "upsert_item", "item": {"id": item_id, "list_id": DEFAULT_LIST, "name": None}}],
+    )
+    body = r.json()
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["detail"] == "name required after trim, 1–200 chars"
+
+    data = active_items(client, headers, 0)
+    assert find_by_id(data["items"], item_id)["name"] == "karnemelk"
+
+
+def test_push_new_tombstone_without_name_still_applies(client, auth):
+    """Regression guard: tombstone-only inserts (no name on the wire) stay legal."""
+    headers = auth()
+    item_id = str(uuid.uuid4())
+    r = push(client, headers, [item_mut(id=item_id, name=None, tombstone=True)])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["rejected"]) == 0
+    assert body["applied"]["items"], "tombstone insert must still echo applied"
+
+
+def test_rejected_internal_exception_is_sanitized(client, auth, monkeypatch):
+    """Internal exception text (e.g. sqlite constraint repr) must NEVER reach
+    rejected[].detail — clients get a generic pointer to the server logs."""
+    from app import sync as sync_mod
+
+    def boom(conn, item, user):
+        raise RuntimeError("NOT NULL constraint failed: items.name")
+
+    monkeypatch.setattr(sync_mod, "upsert_apply", boom)
+    r = push(client, auth(), [item_mut(name="ietsies")])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["rejected"]) == 1
+    assert body["rejected"][0]["detail"] == "internal error — see server logs"
+    assert "NOT NULL" not in body["rejected"][0]["detail"]
+
+
+def test_rejected_syncerror_detail_preserved(client, auth):
+    """SyncError details (client-actionable) are passed through unchanged."""
+    headers = auth()
+    dead = "deadbeef-0000-4000-8000-00000000dead"
+    r = push(client, headers, [item_mut(name="poison", list_id=dead)])
+    body = r.json()
+    assert body["rejected"][0]["detail"] == f"unknown list: {dead}"

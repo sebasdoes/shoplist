@@ -6,10 +6,10 @@
 
 ## Phase 1: Server
 
-- [ ] T001 [P] Write failing tests: migration v1→v2 creates `lists`, seeds `Boodschappen` (fixed uuid 00000000-...-0001), backfills items/trips/history `list_id`, replaces the unique index with `(list_id, name_key)` on active rows, sets `user_version=2`, is idempotent (`server/tests/test_migration2.py`)
+- [ ] T001 [P] Write failing tests: migration v1→v2 creates `lists`, seeds `Boodschappen` (fixed uuid 00000000-...-0001), backfills items/trips/history `list_id`, replaces the unique index with `(list_id, name_key)` on active rows — *(historical: that unique index was itself removed in schema v5 per constitution v1.3.0; duplicates are allowed)* —, sets `user_version=2`, is idempotent (`server/tests/test_migration2.py`)
 - [ ] T002 Implement the migration runner upgrade in `server/app/db.py` (user_version gate; keep the rev sequence untouched)
 - [ ] T003 [P] Write failing tests for list ops: `create_list` (validation 422, name reuse allowed), `delete_list` cascade tombstones items, last-list 409, tombstoned-list item-push 400 + rollback, `trip` op with `list_id` scoping + cross-list decision 400 (`server/tests/test_lists.py`)
-- [ ] T004 Implement list ops in `server/app/models.py` + `server/app/sync.py`: create_list / delete_list ops, per-list dedupe merge, trip scoping, cascade; pull response `lists[]`
+- [ ] T004 Implement list ops in `server/app/models.py` + `server/app/sync.py`: create_list / delete_list ops, trip scoping, cascade; pull response `lists[]` (no per-list dedupe — same-name pushes are independent rows per constitution v1.3.0)
 - [ ] T005 Contract tests: pull snapshot includes lists; push response `applied.lists` (`server/tests/test_api.py` additions)
 
 ## Phase 2: Client

@@ -13,12 +13,14 @@
     completeTrip,
     loadStoresFromDb,
     wireStoresToSync,
+    syncStatus, // live sync chip state (sync.ts setStatus → syncStatus store)
     reorderItems, // feature-004 (T006)
   } from './lib/stores';
   import { moveItemToIndex, sequenceChanged, slotIndexAt, type RowRect } from './lib/drag';
-  import { initSyncTriggers, onSyncComplete, runSync } from './lib/sync';
+  import { initSyncTriggers, runSync } from './lib/sync';
   import { initDb } from './lib/db';
   import { bootErr, bootStep, buildId } from './lib/diag';
+  import { logBreadcrumb } from './lib/log';
   import { bootstrapServices } from './lib/bootstrap';
   import * as oidc from './lib/oidc';
   import AddBar from './components/AddBar.svelte';
@@ -36,7 +38,6 @@
   let tripSheetOpen = $state(false);
   let historyOpen = $state(false);
   let menuOpen = $state(false);
-  let status = $state<'idle' | 'syncing' | 'offline' | 'error'>('idle');
 
   const untickedItems = $derived($activeItems.filter((i) => !i.ticked));
   const tickedItems = $derived($activeItems.filter((i) => i.ticked));
@@ -91,7 +92,7 @@
     if (sequenceChanged(dragOrder, next)) dragOrder = next; // live preview
   }
 
-  function onDragEnd(event: PointerEvent): void {
+  function onDragEnd(_event: PointerEvent): void {
     if (!dragId) return;
     window.removeEventListener('pointermove', onDragMove);
     window.removeEventListener('pointerup', onDragEnd);
@@ -108,9 +109,8 @@
 
   onMount(async () => {
     bootStep('onmount');
-    onSyncComplete(() => {
-      void loadStoresFromDb();
-    });
+    // sync-complete → stores reload is wired ONCE, inside stores.ts
+    // (wireStoresToSync) — no duplicate onSyncComplete registration here.
     wireStoresToSync();
     await initDb();
     bootStep('db-opened');
@@ -209,8 +209,8 @@
     {/if}
   </div>
 {:else}
-  {#if status !== 'idle'}
-    <div class="sync-chip" data-status={status}>{chipLabel(status)}</div>
+  {#if $syncStatus !== 'idle'}
+    <div class="sync-chip" data-status={$syncStatus}>{chipLabel($syncStatus)}</div>
   {/if}
 
   <header class="app-header">

@@ -46,10 +46,14 @@
     }
   }
 
-  function remove(id: string) {
+  async function remove(id: string) {
     error = null;
     try {
-      void deleteList(id);
+      // deleteList is async — its rejection (FR-019 last-list refusal) escapes
+      // a synchronous try/catch, so it must be awaited here to be surfaced.
+      await deleteList(id);
+      // optimistic-undo snackbar: only once the local delete actually applied;
+      // a refusal above leaves the list rendered and shows the error instead.
       snackbarListId = id;
       setTimeout(() => {
         if (snackbarListId === id) snackbarListId = null;
@@ -122,7 +126,7 @@
           disabled={i === liveLists.length - 1}
           onclick={() => move(list.id, 1)}>↓</button
         >
-        <button class="del" aria-label="Delete {list.name}" onclick={() => remove(list.id)}
+        <button class="del" aria-label="Delete {list.name}" onclick={() => void remove(list.id)}
           >✕</button
         >
       </li>

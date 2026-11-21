@@ -12,7 +12,7 @@ SQLite (WAL mode) on the server; mirrored subset in IndexedDB on the client. All
 |---|---|---|
 | id | TEXT uuid PK | client-generated for local adds |
 | name | TEXT NOT NULL | display form, trimmed, ≤200 chars |
-| name_key | TEXT NOT NULL | normalized (see research D6); index |
+| name_key | TEXT NOT NULL | normalized (see research D6); display/search helper only — NOT unique (v1.3.0) |
 | quantity | TEXT NULL | ≤50 chars, e.g. "2x", "500g" |
 | note | TEXT NULL | ≤200 chars |
 | status | TEXT NOT NULL | active / completed / dropped — see transitions |
@@ -24,6 +24,8 @@ SQLite (WAL mode) on the server; mirrored subset in IndexedDB on the client. All
 | tombstone | INTEGER NOT NULL DEFAULT 0 | 1 = deleted, propagates to offline devices |
 
 Unique (partial): `UNIQUE(name_key) WHERE status='active' AND tombstone=0`.
+
+> **Amendment (constitution v1.3.0, 2026-11-21)**: this unique-partial index was removed (dedupe index dropped, schema v5). Identical names now coexist on a list as independent rows; `name_key` remains only as a normalized display/search helper — the index above is historical (v1 schema).
 
 ### history
 
@@ -90,5 +92,5 @@ watermark (last pulled rev), outbox queue (mutations or trip events, with client
 
 ## Indexes
 
-- items: `(status, tombstone, name_key)` unique-partial + `(rev)` for pull
+- items: `(status, tombstone, name_key)` unique-partial *historical — dropped in schema v5 (constitution v1.3.0); `name_key` is now an ordinary index serving display/search (type-to-search + quick-add aggregation)* + `(rev)` for pull
 - history: `(occurred_at DESC)` + `(rev)`

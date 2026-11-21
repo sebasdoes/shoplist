@@ -141,4 +141,75 @@ describe('db (T010)', () => {
     expect(await db.getAllItems()).toHaveLength(0);
     expect(await db.getState<number>('watermark')).toBeNull();
   });
+
+  it('v1→v2 upgrade keeps queued outbox entries and adds the lists store once', async () => {
+    // Start from a REAL v1 database (pre-lists schema), seeded with a queued
+    // mutation, the way an app updated from the single-list build looks.
+    await db.deleteDatabaseForTests();
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('shoplist', 1);
+      req.onupgradeneeded = () => {
+        const v1 = req.result;
+        const items = v1.createObjectStore('items', { keyPath: 'id' });
+        items.createIndex('by_rev', 'rev');
+        items.createIndex('by_status', 'status');
+        const history = v1.createObjectStore('history', { keyPath: 'id' });
+        history.createIndex('by_occurred_at', 'occurred_at');
+        history.createIndex('by_rev', 'rev');
+        v1.createObjectStore('outbox', { keyPath: 'seq', autoIncrement: true });
+        v1.createObjectStore('state');
+      };
+      req.onsuccess = () => {
+        const v1 = req.result;
+        const tx = v1.transaction('outbox', 'readwrite');
+        tx.objectStore('outbox').add({
+          op: 'upsert_item',
+          item: { id: 'queued-a', name: 'melk', list_id: 'legacy-list' },
+          fields: ['name'],
+          ts: new Date().toISOString(),
+        });
+        tx.oncomplete = () => {
+          v1.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+
+    // initDb opens at DB_VERSION=2 → the v1→v2 upgrade runs.
+    await db.initDb();
+
+    // 1. the queued mutation SURVIVED the migration (never dropped by an upgrade)
+    const outbox = await db.getOutbox();
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0].seq).toBe(1);
+    expect((outbox[0] as { item: { id: string } }).item.id).toBe('queued-a');
+
+    // 2. the lists store now exists exactly once (empty, usable)
+    expect(await db.getAllLists()).toEqual([]);
+    await db.putList({
+      id: 'l1',
+      name: 'Boodschappen',
+      created_by: null,
+      created_at: new Date().toISOString(),
+      tombstone: false,
+      rev: 0,
+      sort_order: 0,
+    });
+    expect(await db.getAllLists()).toHaveLength(1);
+
+    // 3. the watermark reset happened (state cleared → full resync next pull)
+    expect(await db.getState('watermark')).toBeNull();
+
+    // 4. the outbox keeps accepting new entries after the upgrade
+    const e2 = await db.enqueueOutbox({
+      op: 'upsert_item',
+      item: { id: 'queued-b', name: 'brood', list_id: 'legacy-list' },
+      fields: ['name'],
+      ts: new Date().toISOString(),
+    });
+    expect(await db.getOutbox()).toHaveLength(2);
+    expect(e2.seq).toBe(2);
+  });
 });

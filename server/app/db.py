@@ -25,6 +25,7 @@ name_key). No data changes and no backfill; the `name_key` column stays
 from __future__ import annotations
 
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,10 +173,18 @@ def connect(path: str) -> sqlite3.Connection:
         parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    # busy_timeout FIRST: the other pragmas (notably journal_mode=WAL) need
+    # locks, and without a timeout two concurrent cold-start connections race
+    # into an unretried 'database is locked' (seen live in the race test).
     conn.execute("PRAGMA busy_timeout=5000")
+    for _ in range(5):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            break
+        except sqlite3.OperationalError:
+            time.sleep(0.05)
     migrate(conn)
     return conn
 
@@ -206,15 +215,26 @@ def _current_schema_version(conn: sqlite3.Connection) -> int:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent schema migration.
+
+    Concurrency: the schema-version read and every DDL/ALTER decision happen
+    inside ONE BEGIN IMMEDIATE transaction, so concurrent cold-start
+    connections cannot both read a stale version and both run the same ALTER
+    (which used to surface as a duplicate-column 500). SQLite serializes write
+    transactions: the second connection blocks here, then re-reads the version.
+    The preceding CREATE TABLE IF NOT EXISTS is safe to race (no-op for the
+    loser); PRAGMA user_version is written inside the transaction.
+    """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
         "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
     )
-    current = _current_schema_version(conn)
-    if current >= SCHEMA_VERSION:
-        return
     conn.execute("BEGIN IMMEDIATE")
     try:
+        current = _current_schema_version(conn)
+        if current >= SCHEMA_VERSION:
+            conn.execute("COMMIT")  # release the lock; nothing to migrate
+            return
         if current == 0:
             # Fresh install: build the full v5 schema directly (never with the
             # dedupe index), then seed.

@@ -9,8 +9,42 @@ permissions:
   contents: read
   packages: write
 
+# one build per latest push
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: public-repo hygiene guard
+        run: |
+          # standing rule: no private domains in tracked files
+          ! grep -riE "akiha\.nl" --include="*.py" --include="*.ts" --include="*.svelte" \
+            --include="*.md" --include="*.yaml" --include="*.yml" . || {
+            echo "::error::private domain found in tracked files"; exit 1; }
+
+      - name: server — uv pytest + ruff
+        run: |
+          pipx install uv
+          cd server
+          uv sync --frozen
+          uv run ruff check .
+          uv run pytest -q
+
+      - name: frontend — vitest + tsc + build
+        run: |
+          cd frontend
+          npm ci
+          npx vitest run
+          npx tsc --noEmit
+          npm run build
+
   build-and-push:
+    needs: [gates]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

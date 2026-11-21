@@ -12,6 +12,8 @@ SQLite migration v1→v2 (one-shot, server-side, guarded by `PRAGMA user_version
 6. `ALTER TABLE history ADD COLUMN list_id TEXT NOT NULL DEFAULT '00000000-0000-4000-8000-000000000001'`
 7. `PRAGMA user_version = 2`
 
+> **Amendment (constitution v1.3.0, 2026-11-21)**: the `(list_id, name_key)` unique index created in step 4 was itself removed in schema v5 — duplicates are allowed within a list, no uniqueness constraint, no dedupe merge. Step 4 is historical as written.
+
 ## Tables
 
 ### lists
@@ -29,7 +31,7 @@ SQLite migration v1→v2 (one-shot, server-side, guarded by `PRAGMA user_version
 
 Gain `list_id TEXT NOT NULL` as above. Semantics:
 
-- items: names are unique per (list_id, name_key) among active, live rows. Dedupe merge folds same-name pushes onto the survivor OF THE SAME LIST.
+- items: *(amended per constitution v1.3.0, 2026-11-21)* identical names coexist as INDEPENDENT rows within a list — no uniqueness constraint, no dedupe merge, no survivor. The old rule that folded same-name pushes onto the survivor of the same list was removed; the `(list_id, name_key)` unique index from this migration was itself dropped in schema v5. `name_key` remains only as a normalized display/search helper (add-bar type-to-search + quick-add aggregation).
 - trips: trip decisions apply only to the list's own items; "kept" bulk applies to remaining active items OF THAT LIST.
 - history: list_id informative (which list it came from); the suggestion pool is global — rankSuggestions consumes ALL history rows regardless of list.
 - staple re-adds (trip complete) create the new active row on the SAME list as the completed item, prefilled from the history snapshot.

@@ -2,7 +2,7 @@
 
 **Feature**: `002-multiple-lists` | **Base unchanged**: `https://shoplist.example.com/api/v1`
 
-The push/pull shapes gain list support. Everything else (auth, LWW, dedupe, idempotent trips, SSE events) is unchanged.
+The push/pull shapes gain list support. Everything else is unchanged — with one correction since constitution v1.3.0 (2026-11-21): **auto-dedupe is gone**. LWW and tombstone precedence still apply, idempotent trips and SSE events unchanged; same-named items within a list are independent rows and `merged_into` is always null.
 
 ## Push mutations (POST /sync/push)
 

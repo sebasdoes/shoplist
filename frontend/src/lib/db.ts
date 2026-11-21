@@ -182,14 +182,23 @@ export function initDb(): Promise<IDBPDatabase<ShoplistDB>> {
           db.createObjectStore('state');
         }
         // T006 — v1→v2: add the `lists` store. Existing local DBs only hold
-        // mirrored subsets (single-list server), so the simplest lossless
-        // migration is to drop the mirrors and resync: clearing `state` resets
-        // the watermark, forcing a full watermark-0 snapshot (lists included).
-        db.createObjectStore('lists', { keyPath: 'id' });
-        if (oldVersion >= 1) {
+        // mirrored subsets (single-list server), so the migration drops the
+        // item/history mirrors and resets `state` to clear the watermark,
+        // forcing a full watermark-0 snapshot (lists included). The OUTBOX is
+        // deliberately NOT cleared: queued FR-022 mutations must survive every
+        // upgrade, and the reset watermark pull leaves locally-pending (outbox-
+        // queued) edits intact anyway (per-field overlay in pullChanges).
+        // The createObjectStore call is guarded so a future DB_VERSION bump
+        // (oldVersion ≥ 2, `lists` already present) cannot crash with
+        // ConstraintError on the existing store.
+        if (!db.objectStoreNames.contains('lists')) {
+          db.createObjectStore('lists', { keyPath: 'id' });
+        }
+        // exactly the v1→v2 bump: later upgrades manage their own migration
+        if (oldVersion >= 1 && oldVersion < 2) {
           tx.objectStore('items').clear();
           tx.objectStore('history').clear();
-          tx.objectStore('outbox').clear();
+          // outbox intentionally NOT cleared — queued mutations survive
           tx.objectStore('state').clear();
         }
       },

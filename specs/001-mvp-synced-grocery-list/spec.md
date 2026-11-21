@@ -23,7 +23,7 @@ User A opens Shoplist on his phone, signs in once through Pocket ID, and adds "k
 1. **Given** both devices online, **When** User A adds an item, **Then** User B's list shows it within 10 seconds without a manual refresh.
 2. **Given** User A's phone in airplane mode, **When** he adds an item, **Then** the item appears in his list immediately (no spinner, no error) and is still there after closing and reopening the PWA.
 3. **Given** airplane mode turned off again, **When** the phone reconnects, **Then** the queued item syncs automatically and User B's phone shows it within 10 seconds.
-4. **Given** both users simultaneously added "melk" while offline, **When** both devices sync, **Then** the merged list contains exactly one "melk".
+4. **Given** both users simultaneously added "melk" while offline, **When** both devices sync, **Then** both "melk" entries appear on the list as independent rows (duplicates coexist; auto-dedupe was removed by constitution v1.3.0). *(Amended 2026-11-21 — originally this scenario required exactly one "melk" via dedupe.)*
 5. **Given** a fresh install, **When** the user first opens the app, **Then** sign-in goes through Pocket ID once and the chosen credentials persist across PWA relaunches.
 
 ---
@@ -99,7 +99,7 @@ When User B needs something again that is not a staple, she opens the quick-add 
 - **FR-005**: System MUST authenticate via Pocket ID OIDC using a public client with PKCE; no passwords are stored by this system.
 - **FR-006**: Sync server MUST verify an OIDC identity token against Pocket ID's JWKS on every API request and reject requests without a valid token.
 - **FR-007**: System MUST resolve concurrent edits with per-field last-write-wins, ordered by server-received timestamps.
-- **FR-008**: System MUST auto-dedupe items whose normalized names are identical at sync time (merge, keep both users' stamps).
+- **FR-008**: *(Rewritten per constitution v1.3.0, 2026-11-21 — the original auto-dedupe requirement was REMOVED by stakeholder decision.)* System MUST allow identical names to coexist on the same list: two same-named items are independent rows with independent ids, never merged, with no survivor. There is no uniqueness constraint on `name_key`; the normalized key is retained only as a display/search helper (add-bar type-to-search matching and quick-add aggregation).
 - **FR-009**: System MUST implement trip completion as a single idempotent server-side event that atomically: (a) archives ticked items to history, (b) applies one-tap keep/drop decisions for unticked items, (c) re-adds staple items not currently active, with quantity/note from their last purchase.
 - **FR-010**: System MUST let the user toggle the staple flag per item in the edit sheet.
 - **FR-011**: System MUST expose purchase history forever, with entries ordered by recency/frequency in the quick-add view, and MUST let each entry be permanently deleted.
@@ -109,7 +109,7 @@ When User B needs something again that is not a staple, she opens the quick-add 
 
 ### Key Entities *(include if feature involves data)*
 
-- **Item**: name (unique by normalization), quantity (optional), note (optional), status (active / completed / not-bought / dropped), staple flag, created_by, created_at, updated_at (server-received), tombstone flag.
+- **Item**: name (duplicates allowed as of constitution v1.3.0 — identical names are independent rows; originally "unique by normalization", amended 2026-11-21), quantity (optional), note (optional), status (active / completed / not-bought / dropped), staple flag, created_by, created_at, updated_at (server-received), tombstone flag.
 - **Trip**: single completion event with id, completed_by, completed_at, and the resulting per-item decisions; idempotency key per trip.
 - **History entry**: immutable record of a bought/not-bought outcome — item name, quantity, note, outcome, who, when; deletable permanently by any household member.
 - **User**: identity only, resolved from the Pocket ID token (subject id + display name). Nothing else is stored.
@@ -121,7 +121,7 @@ When User B needs something again that is not a staple, she opens the quick-add 
 
 - **SC-001**: Adding an item while fully offline completes in under 1 second with no error state, and the add survives an app restart.
 - **SC-002**: An item added by one user appears on the other user's device within 10 seconds of both devices being online.
-- **SC-003**: Two devices making independent offline edits to the same item lose zero edits (per-field LWW) and end with no duplicate-name items.
+- **SC-003**: Two devices making independent offline edits to the same item lose zero edits (per-field LWW); same-named items added on parallel paths remain intact as independent rows (duplicates allowed, v1.3.0).
 - **SC-004**: Airplane-mode round trip (add, check off, trip done, reopen app twice) functions with zero network access.
 - **SC-005**: Sync server idles under 50 MB RAM and adds no manual maintenance burden — no cron jobs beyond its own event loop, no log rotation babysitting.
 
@@ -131,4 +131,4 @@ When User B needs something again that is not a staple, she opens the quick-add 
 - Both clients are Android browsers (Chrome/derivatives) adding the PWA to the home screen; desktop browser use is a nice-to-have, not a target.
 - Pocket ID supports public (secret-less) OIDC clients with PKCE — must be verified during planning; fallback is a confidential client with the secret supplied to the server, not the PWA, or the oauth2-proxy sidecar pattern.
 - Deployment follows the established VPS pattern: GHCR image, compose service behind Caddy, User A applies delivered file sets himself.
-- One list shared by the household means one data space on the server; multi-household/multi-list tenancy is explicitly rejected (Constitution III).
+- One data space on the server; multi-household tenancy is explicitly rejected (Constitution III). *(Amended: multiple named lists per household are IN scope since constitution v1.1.0 — see feature 002.)*
