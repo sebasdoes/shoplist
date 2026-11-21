@@ -78,9 +78,39 @@
     border: 1px solid var(--line);
   }
   .tick {
-    width: 1.5rem;
-    height: 1.5rem;
-    accent-color: var(--brand);
+    /* Polished custom checkbox: dark surface, brand fill + check when ticked
+       (the UA default rendered a jarring white box unchecked on dark). */
+    appearance: none;
+    -webkit-appearance: none;
+    width: 1.6rem;
+    height: 1.6rem;
+    margin: 0;
+    border: 2px solid var(--muted);
+    border-radius: 0.5rem;
+    background: var(--surface-2);
+    cursor: pointer;
+    flex-shrink: 0;
+    display: inline-grid;
+    place-content: center;
+    transition:
+      background 0.15s ease,
+      border-color 0.15s ease;
+  }
+  .tick::before {
+    content: "";
+    width: 0.95rem;
+    height: 0.95rem;
+    transform: scale(0);
+    transition: transform 0.12s ease-in-out;
+  }
+  .tick:checked {
+    background: var(--brand);
+    border-color: var(--brand);
+  }
+  .tick:checked::before {
+    transform: scale(1);
+    background: var(--brand-ink);
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 3%, 46% 63%);
   }
   .item-main {
     flex: 1;
