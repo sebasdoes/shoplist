@@ -32,8 +32,8 @@
   let historyOpen = $state(false);
   let status = $state<'idle' | 'syncing' | 'offline' | 'error'>('idle');
 
-  const untickedItems = $derived(activeItems.filter((i) => !i.ticked));
-  const tickedCount = $derived(activeItems.filter((i) => i.ticked).length);
+  const untickedItems = $derived($activeItems.filter((i) => !i.ticked));
+  const tickedCount = $derived($activeItems.filter((i) => i.ticked).length);
 
   onMount(async () => {
     bootStep('onmount');
@@ -136,7 +136,7 @@
   <AddBar onadd={(name, quantity) => void addItem({ name, quantity })} />
 
   <ul class="list">
-    {#each activeItems as item (item.id)}
+    {#each $activeItems as item (item.id)}
       <ItemRow {item} ontoggle={(i) => void toggleTick(i)} onedit={(i) => (editing = i)} />
     {:else}
       <li class="empty-hint">Nothing here yet — add the first item above.</li>

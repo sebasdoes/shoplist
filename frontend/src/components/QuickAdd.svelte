@@ -7,8 +7,8 @@
 
   // T033 — decayed-frequency ranking over the history store; not_bought and
   // names already on the list are excluded.
-  const activeNameKeys = $derived(new Set(activeItems.map((i) => i.name_key)));
-  const suggestions = $derived(rankSuggestions(historySorted, Date.now(), activeNameKeys));
+  const activeNameKeys = $derived(new Set($activeItems.map((i) => i.name_key)));
+  const suggestions = $derived(rankSuggestions($historySorted, Date.now(), activeNameKeys));
 </script>
 
 <section class="quick-add">
