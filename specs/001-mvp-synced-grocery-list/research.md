@@ -12,7 +12,7 @@
 - `code_challenge_methods_supported` includes `S256`
 - `offline_access` scope offered; request it to get refresh tokens
 - Pocket ID supports public clients (API field `isPublic`); public clients require PKCE (pocket-id issue #757) — we always use PKCE, so compliant
-- Client provisioning is a documented one-time admin step for User A (callback URL = the PWA origin), not a code path
+- Client provisioning: created by the agent via the Pocket ID API (X-API-Key, `POST /api/oidc/clients`) with callbacks `https://shoplist.example.com` and `http://localhost:5173` — not a manual admin step.
 
 **Alternatives rejected**:
 - *oauth2-proxy sidecar* — that pattern is for services that cannot speak OIDC (pocketid-oidc-proxy skill); we control the app, and a sidecar adds a cookie session layer the PWA sync flow doesn't need.

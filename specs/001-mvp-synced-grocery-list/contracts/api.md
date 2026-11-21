@@ -1,6 +1,6 @@
 # Phase 1 API Contract: Shoplist sync server
 
-**Feature**: `001-mvp-synced-grocery-list` | **Base**: `https://shoplist.example.com/api/v1` (subdomain provisional — final URL chosen at deploy)
+**Feature**: `001-mvp-synced-grocery-list` | **Base**: `https://shoplist.example.com/api/v1` (v.example.com wildcard forwards without subdomain creation)
 
 All requests: `Authorization: Bearer <JWT>`; 401 on invalid/expired → client re-auths via PKCE then replays outbox. All timestamps server-stamped on receive (LWW source). Bodies JSON; errors: `{"detail": "..."}` with 400/401/404/409/422.
 
