@@ -74,9 +74,10 @@ describe('menu polish + reordering (feature-003)', () => {
 
     const { html } = render(ListMenu, { props: { onclose: vi.fn(), onsignout, onhistory: vi.fn() } });
 
-    expect(html).toContain('Sign out');
     expect(html).toContain('History');
-    expect(html).toContain('Ria');
+    expect(html).toContain('Sign out');
+    // the drawer no longer shows the signed-in user's name
+    expect(html).not.toContain('Ria');
     // rows render in (sort_order asc) order, not insertion order
     expect(html.indexOf('Alpha')).toBeLessThan(html.indexOf('Beta'));
     expect(html.indexOf('Beta')).toBeLessThan(html.indexOf('Gamma'));

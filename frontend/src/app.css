@@ -109,12 +109,14 @@ textarea::placeholder {
   margin-bottom: 0.25rem;
 }
 
-.drawer-account .account-name {
-  color: var(--muted);
-  font-size: 0.85rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.drawer-account .account-history {
+  color: var(--ink);
+  font-size: 0.95rem;
+  padding: 0.4rem 0.25rem;
+}
+
+.drawer-account .account-history:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .drawer-account .account-signout {

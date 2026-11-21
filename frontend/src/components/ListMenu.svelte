@@ -89,9 +89,9 @@
 ></button>
 <nav class="menu-drawer" aria-label="Lists">
   {#if $userStore}
-    <!-- feature-003 (T007): account section at the drawer top -->
+    <!-- feature-005: account section shows only History (left, was the user's
+         name) + Sign out (right) — no name display. -->
     <div class="drawer-account">
-      <span class="account-name">{$userStore.name}</span>
       <button class="btn-ghost account-history" onclick={onhistory}>History</button>
       <button class="btn-ghost account-signout" onclick={onsignout}>Sign out</button>
     </div>
