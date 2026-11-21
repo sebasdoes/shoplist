@@ -5,6 +5,7 @@
     activeItems,
     activeList, // feature-003 (T008): header shows the ACTIVE list name
     addItem,
+    userStore,
     toggleTick,
     deleteItem,
     saveItemEdit,
