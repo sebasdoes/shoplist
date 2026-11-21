@@ -244,14 +244,45 @@ export async function handleRedirectIfPresent(): Promise<boolean> {
     }
     return false;
   }
+  // Idempotency FIRST: on a double-loaded callback the verifier is already
+  // cleared and the code already (attempted to be) consumed.
+  const consumed = await db.getState<string | null>('oidc_consumed_code');
+  if (consumed === code) {
+    // Session should already be cached from the first pass; just clean up.
+    await clearLoginState();
+    if (typeof history !== 'undefined') {
+      history.replaceState(null, '', location.pathname);
+    }
+    return true;
+  }
   const verifier = await db.getState<string>(VERIFIER_KEY);
   if (!verifier) return false;
-  await completeLoginWithCode(code, verifier);
+  try {
+    await completeLoginWithCode(code, verifier);
+  } catch (e) {
+    const msg = `token-exchange-failed ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`;
+    console.error(msg);
+    void import('./log').then((m) => m.logBreadcrumb(msg));
+    // Mark the code consumed anyway: a retry of this URL can never succeed and
+    // would only 400 again; the user signs in fresh instead of dead-ending.
+    await db.setState('oidc_consumed_code', code);
+    if (typeof history !== 'undefined') {
+      history.replaceState(null, '', location.pathname);
+    }
+    return false;
+  }
+  await db.setState('oidc_consumed_code', code);
   await db.setState(STATE_KEY, null);
   if (typeof history !== 'undefined') {
     history.replaceState(null, '', location.pathname);
   }
   return true;
+}
+
+/** Clears one-shot login artifacts (verifier + state) after use or failure. */
+async function clearLoginState(): Promise<void> {
+  await db.setState(STATE_KEY, null);
+  await db.setState(VERIFIER_KEY, null);
 }
 
 export async function getSession(): Promise<Session | null> {

@@ -36,6 +36,10 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [],
         importScripts: ['sw-custom.js'],
+        // New worker takes over at the next load instead of waiting for all
+        // tabs to close — kills the "phone runs yesterday's bundle" class.
+        skipWaiting: true,
+        clientsClaim: true,
       },
     }),
   ],
