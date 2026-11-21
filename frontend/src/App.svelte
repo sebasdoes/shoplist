@@ -243,6 +243,9 @@
         <span class="active-list-name">{$activeList.name}</span>
       {/if}
     </div>
+    <!-- feature-005: Trip done is the only primary action — top-right on the
+         list-name row; the fixed footer is gone and the list gets the space. -->
+    <button class="btn-primary trip-done" onclick={() => (tripSheetOpen = true)}>Trip done</button>
   </header>
 
   <AddBar onadd={(name, quantity) => void addItem({ name, quantity })} />
@@ -274,10 +277,6 @@
       {/each}
     {/if}
   </ul>
-
-  <div class="footer-actions">
-    <button class="btn-primary" onclick={() => (tripSheetOpen = true)}>Trip done</button>
-  </div>
 
   {#if editing}
     {#key editing.id}

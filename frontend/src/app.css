@@ -168,7 +168,7 @@ textarea::placeholder {
 .snackbar {
   position: fixed;
   left: 50%;
-  bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+  bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   background: var(--surface-2);
   color: var(--ink);
@@ -237,16 +237,11 @@ button.brand-logo {
   font-size: 0.7rem;
 }
 
-.footer-actions {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: space-around;
-  gap: 0.5rem;
-  padding: 0.6rem 1rem calc(0.6rem + env(safe-area-inset-bottom, 0px));
-  background: var(--bg);
-  border-top: 1px solid var(--line);
-  z-index: 20;
+/* feature-005: Trip done moved to the header row (right side); no more fixed
+   footer — the list owns the full height. */
+.app-header .trip-done {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
 }
