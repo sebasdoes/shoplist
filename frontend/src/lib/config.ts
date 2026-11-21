@@ -12,8 +12,9 @@ export const config = {
   oidcClientId:
     (env.VITE_OIDC_CLIENT_ID as string | undefined) ?? 'abac6ecf-d312-4ed1-a3f8-46e5958a0fe8',
   oidcScopes: (env.VITE_OIDC_SCOPES as string | undefined) ?? 'openid profile email offline_access',
-  // Dev callback per task context; production uses the app origin.
-  redirectUri: (env.VITE_OIDC_REDIRECT_URI as string | undefined) ?? `${origin()}/`,
+  // Must match the Pocket ID-registered callback EXACTLY (no trailing slash);
+  // registered: production origin + http://localhost:5173 (dev).
+  redirectUri: (env.VITE_OIDC_REDIRECT_URI as string | undefined) ?? origin(),
 };
 
 let runtimeLoaded = false;
