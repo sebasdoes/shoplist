@@ -72,9 +72,10 @@ describe('menu polish + reordering (feature-003)', () => {
     await loadStoresFromDb();
     userStore.set({ sub: 'u1', name: 'Ria' });
 
-    const { html } = render(ListMenu, { props: { onclose: vi.fn(), onsignout } });
+    const { html } = render(ListMenu, { props: { onclose: vi.fn(), onsignout, onhistory: vi.fn() } });
 
     expect(html).toContain('Sign out');
+    expect(html).toContain('History');
     expect(html).toContain('Ria');
     // rows render in (sort_order asc) order, not insertion order
     expect(html.indexOf('Alpha')).toBeLessThan(html.indexOf('Beta'));

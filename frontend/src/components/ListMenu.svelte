@@ -14,8 +14,13 @@
     userStore,
   } from '../lib/stores';
 
-  // feature-003 (T007): the drawer owns the account section (name + Sign out)
-  let { onclose, onsignout }: { onclose: () => void; onsignout: () => void } = $props();
+  // feature-003 (T007): the drawer owns the account section (name + Sign out).
+  // feature-005: history access lives here too (main screen footer keeps only Trip done).
+  let {
+    onclose,
+    onsignout,
+    onhistory,
+  }: { onclose: () => void; onsignout: () => void; onhistory: () => void } = $props();
 
   let newName = $state('');
   let error = $state<string | null>(null);
@@ -87,6 +92,7 @@
     <!-- feature-003 (T007): account section at the drawer top -->
     <div class="drawer-account">
       <span class="account-name">{$userStore.name}</span>
+      <button class="btn-ghost account-history" onclick={onhistory}>History</button>
       <button class="btn-ghost account-signout" onclick={onsignout}>Sign out</button>
     </div>
   {/if}
@@ -146,6 +152,22 @@
 </nav>
 
 <style>
+  .drawer-account {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 0 0.75rem 0;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .account-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
   .menu-backdrop {
     position: fixed;
     inset: 0;

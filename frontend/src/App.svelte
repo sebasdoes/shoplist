@@ -276,7 +276,6 @@
   </ul>
 
   <div class="footer-actions">
-    <button class="btn-ghost" onclick={() => (historyOpen = true)}>History</button>
     <button class="btn-primary" onclick={() => (tripSheetOpen = true)}>Trip done</button>
   </div>
 
@@ -306,6 +305,13 @@
   {/if}
 
   {#if menuOpen}
-    <ListMenu onclose={() => (menuOpen = false)} onsignout={signOut} />
+    <ListMenu
+      onclose={() => (menuOpen = false)}
+      onsignout={signOut}
+      onhistory={() => {
+        menuOpen = false;
+        historyOpen = true;
+      }}
+    />
   {/if}
 {/if}
