@@ -23,6 +23,7 @@
   import ItemEditSheet from './components/ItemEditSheet.svelte';
   import TripDoneSheet from './components/TripDoneSheet.svelte';
   import HistoryDrawer from './components/HistoryDrawer.svelte';
+  import ListMenu from './components/ListMenu.svelte';
 
   type AuthState = 'checking' | 'signedOut' | 'signedIn';
 
@@ -31,6 +32,7 @@
   let editing: Item | null = $state(null);
   let tripSheetOpen = $state(false);
   let historyOpen = $state(false);
+  let menuOpen = $state(false);
   let status = $state<'idle' | 'syncing' | 'offline' | 'error'>('idle');
 
   const untickedItems = $derived($activeItems.filter((i) => !i.ticked));
@@ -134,13 +136,20 @@
 
   <header class="app-header">
     <div class="brand-side">
-      <span class="brand-logo" aria-label="Shoplist">
+      <!-- T009: the basket logo doubles as the LEFT hamburger menu button. -->
+      <button
+        class="brand-logo"
+        aria-label="Lists"
+        aria-haspopup="true"
+        aria-expanded={menuOpen}
+        onclick={() => (menuOpen = true)}
+      >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M5.5 9h13l-1.2 8.6a2.8 2.8 0 0 1-2.8 2.4H9.5a2.8 2.8 0 0 1-2.8-2.4L5.5 9Z" />
           <path d="M9 9 12 3.5 15 9" />
           <path d="M9.7 12.5v4.6M12 12.5v4.6M14.3 12.5v4.6" />
         </svg>
-      </span>
+      </button>
       {#if $userStore}
         <span class="user">{$userStore.name}</span>
       {/if}
@@ -191,5 +200,9 @@
 
   {#if historyOpen}
     <HistoryDrawer onclose={() => (historyOpen = false)} />
+  {/if}
+
+  {#if menuOpen}
+    <ListMenu onclose={() => (menuOpen = false)} />
   {/if}
 {/if}

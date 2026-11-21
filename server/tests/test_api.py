@@ -2,13 +2,20 @@
 
 import uuid
 
+DEFAULT_LIST = "00000000-0000-4000-8000-000000000001"
+
 
 def push(client, headers, mutations):
     return client.post("/api/v1/sync/push", json={"mutations": mutations}, headers=headers)
 
 
 def item_mut(**overrides):
-    fields = {"id": str(uuid.uuid4()), "name": "koffie", "tombstone": False}
+    fields = {
+        "id": str(uuid.uuid4()),
+        "name": "koffie",
+        "tombstone": False,
+        "list_id": DEFAULT_LIST,
+    }
     fields.update(overrides)
     return {"op": "upsert_item", "item": fields}
 
@@ -37,8 +44,10 @@ def test_push_happy_path_and_applied_shape(client, auth):
     body = resp.json()
     assert set(body.keys()) == {"applied", "trip"}
     applied = body["applied"]
-    assert len(applied) == 1
-    entry = applied[0]
+    assert set(applied.keys()) == {"items", "lists"}
+    assert applied["lists"] == []
+    assert len(applied["items"]) == 1
+    entry = applied["items"][0]
     assert entry["id"] == item_id
     assert isinstance(entry["rev"], int)
     assert isinstance(entry["updated_at"], str)
@@ -57,6 +66,7 @@ def test_pull_response_shape(client, auth):
     assert {"watermark", "items", "history", "full_snapshot"} <= set(body.keys())
     item_fields = {
         "id",
+        "list_id",
         "name",
         "quantity",
         "note",
@@ -80,7 +90,7 @@ def test_push_merged_into_response(client, auth):
     dupe = str(uuid.uuid4())
     resp = push(client, headers, [item_mut(id=dupe, name="KOFFIE")])
     assert resp.status_code == 200
-    assert resp.json()["applied"][0]["merged_into"] == survivor
+    assert resp.json()["applied"]["items"][0]["merged_into"] == survivor
 
 
 def test_401_without_token(client):
@@ -145,8 +155,97 @@ def test_push_batch_applies_in_order(client, auth):
     resp = push(client, headers, [item_mut(id=a, name="boter"), item_mut(id=a, name="margarine")])
     assert resp.status_code == 200
     applied = resp.json()["applied"]
-    assert len(applied) == 2
+    assert len(applied["items"]) == 2
     data = client.post("/api/v1/sync/pull", json={"watermark": 0}, headers=headers).json()
     rows = [x for x in data["items"] if x["id"] == a]
     assert len(rows) == 1
     assert rows[0]["name"] == "margarine"
+
+
+# --- T005 contract tests (specs/002 contracts/api.md) ----------------------
+
+
+LIST_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+
+def test_pull_watermark0_snapshot_includes_all_lists(client, auth):
+    """watermark-0 snapshot includes ALL lists — tombstoned ones too."""
+    headers = auth()
+    r = push(client, headers, [{"op": "create_list", "list": {"id": LIST_A, "name": "A"}}])
+    assert r.status_code == 200
+    r = push(client, headers, [{"op": "delete_list", "list_id": LIST_A}])
+    assert r.status_code == 200
+
+    body = client.post(
+        "/api/v1/sync/pull", json={"watermark": 0, "include_history": False}, headers=headers
+    ).json()
+    assert "lists" in body
+    lists = {x["id"]: x for x in body["lists"]}
+    assert set(lists) == {"00000000-0000-4000-8000-000000000001", LIST_A}
+    for entry in lists.values():
+        assert set(entry.keys()) == {"id", "name", "tombstone", "rev"}
+    assert lists["00000000-0000-4000-8000-000000000001"]["name"] == "Boodschappen"
+    assert lists["00000000-0000-4000-8000-000000000001"]["tombstone"] is False
+    assert lists[LIST_A]["tombstone"] is True  # tombstoned lists ship too
+
+
+def test_pull_delta_lists_via_watermark(client, auth):
+    """A list applied after the watermark arrives in the delta pull."""
+    headers = auth()
+    first_wm = client.post(
+        "/api/v1/sync/pull", json={"watermark": 0, "include_history": False}, headers=headers
+    ).json()["watermark"]
+    push(client, headers, [{"op": "create_list", "list": {"id": LIST_A, "name": "A"}}])
+    body = client.post(
+        "/api/v1/sync/pull", json={"watermark": first_wm, "include_history": False}, headers=headers
+    ).json()
+    assert [x["id"] for x in body["lists"]] == [LIST_A]
+    assert body["lists"][0]["name"] == "A"
+    assert body["lists"][0]["tombstone"] is False
+
+
+def test_push_response_applied_lists(client, auth):
+    """applied gains a lists section: [{id, name, rev, tombstone}]."""
+    headers = auth()
+    r = push(
+        client, headers, [{"op": "create_list", "list": {"id": LIST_A, "name": "Winkelpad A"}}]
+    )
+    assert r.status_code == 200
+    applied = r.json()["applied"]
+    assert set(applied.keys()) == {"items", "lists"}
+    assert applied["items"] == []
+    entry = applied["lists"][0]
+    assert set(entry.keys()) == {"id", "name", "rev", "tombstone"}
+    assert entry == {
+        "id": LIST_A,
+        "name": "Winkelpad A",
+        "rev": entry["rev"],
+        "tombstone": False,
+    }
+
+    r = push(client, headers, [{"op": "delete_list", "list_id": LIST_A}])
+    assert r.status_code == 200
+    entry = r.json()["applied"]["lists"][0]
+    assert entry["id"] == LIST_A
+    assert entry["tombstone"] is True
+    assert entry["rev"] > 0
+
+
+def test_push_mixed_batch_applied_sections(client, auth):
+    """items and lists sections fill independently in one batch."""
+    headers = auth()
+    item_id = str(uuid.uuid4())
+    r = push(
+        client,
+        headers,
+        [
+            item_mut(id=item_id, name="koffie"),
+            {"op": "create_list", "list": {"id": LIST_A, "name": "A"}},
+        ],
+    )
+    assert r.status_code == 200
+    applied = r.json()["applied"]
+    assert [a["id"] for a in applied["items"]] == [item_id]
+    assert [a["id"] for a in applied["lists"]] == [LIST_A]
+    assert applied["lists"][0]["name"] == "A"
+    assert applied["lists"][0]["tombstone"] is False

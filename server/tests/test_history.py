@@ -2,13 +2,20 @@
 
 import uuid
 
+DEFAULT_LIST = "00000000-0000-4000-8000-000000000001"
+
 
 def push(client, headers, mutations):
     return client.post("/api/v1/sync/push", json={"mutations": mutations}, headers=headers)
 
 
 def item_mut(**overrides):
-    fields = {"id": str(uuid.uuid4()), "name": "koffie", "tombstone": False}
+    fields = {
+        "id": str(uuid.uuid4()),
+        "name": "koffie",
+        "tombstone": False,
+        "list_id": DEFAULT_LIST,
+    }
     fields.update(overrides)
     return {"op": "upsert_item", "item": fields}
 
@@ -26,6 +33,7 @@ def _make_history(client, headers, n=3):
                 "op": "trip",
                 "trip": {
                     "id": trip_id,
+                    "list_id": DEFAULT_LIST,
                     "decisions": [{"item_id": i, "outcome": "bought"} for i in ids],
                 },
             }
@@ -44,6 +52,7 @@ def test_history_full_list(client, auth):
     assert len(rows) == 3
     fields = {
         "id",
+        "list_id",
         "item_id",
         "name",
         "quantity",

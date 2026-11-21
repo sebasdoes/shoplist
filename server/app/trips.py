@@ -10,7 +10,7 @@ import sqlite3
 from . import db
 from .auth import AuthUser
 from .models import Readded, TripDecision, TripMutation, TripResponse
-from .sync import SyncError
+from .sync import SyncError, require_live_list
 
 
 def _fetch_item(conn: sqlite3.Connection, item_id: str) -> sqlite3.Row | None:
@@ -30,10 +30,11 @@ def _history_snapshot(
     """bought→history snapshot rows / drop→not_bought (data-model history)."""
     row_id = db.new_id()
     conn.execute(
-        "INSERT INTO history (id, item_id, name, quantity, note, outcome, staple_snapshot, actor, "
-        "occurred_at, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO history (id, list_id, item_id, name, quantity, note, outcome, "
+        "staple_snapshot, actor, occurred_at, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row_id,
+            row["list_id"],  # v2: informative — which list it came from
             row["id"],
             row["name"],
             row["quantity"],
@@ -79,6 +80,8 @@ def apply_trip(conn: sqlite3.Connection, trip: TripMutation, user: AuthUser) -> 
         # trip id = idempotency key: {"duplicate": true}, no effects
         return TripResponse(id=trip.id, duplicate=True, readded=[])
 
+    require_live_list(conn, trip.list_id)  # unknown/deleted list → 400, batch rolls back
+
     # validate explicit item references before writing anything (transaction atomicity)
     explicit: list[tuple[TripDecision, sqlite3.Row]] = []
     bulk: list[TripDecision] = []
@@ -87,6 +90,11 @@ def apply_trip(conn: sqlite3.Connection, trip: TripMutation, user: AuthUser) -> 
             row = _fetch_item(conn, decision.item_id)
             if row is None or row["tombstone"]:
                 raise SyncError(f"unknown item in trip decisions: {decision.item_id}", 400)
+            if row["list_id"] != trip.list_id:
+                # contracts/api.md v2: decisions resolve items WITHIN the list only
+                raise SyncError(
+                    f"item {decision.item_id} belongs to another list", 400
+                )
             explicit.append((decision, row))
         else:
             if decision.outcome == "bought":
@@ -96,8 +104,8 @@ def apply_trip(conn: sqlite3.Connection, trip: TripMutation, user: AuthUser) -> 
     actor = user.subject
     now = db.stamp()
     conn.execute(
-        "INSERT INTO trips (id, completed_by, completed_at, rev) VALUES (?, ?, ?, ?)",
-        (trip.id, actor, now, db.next_rev(conn)),
+        "INSERT INTO trips (id, list_id, completed_by, completed_at, rev) VALUES (?, ?, ?, ?, ?)",
+        (trip.id, trip.list_id, actor, now, db.next_rev(conn)),
     )
 
     decided_ids: set[str] = set()
@@ -109,10 +117,11 @@ def apply_trip(conn: sqlite3.Connection, trip: TripMutation, user: AuthUser) -> 
             if outcome == "bought" and row["staple"]:
                 bought_staples.append(row)
 
-    # bulk decisions (no item_id) cover the unticked remainder
+    # bulk decisions (no item_id) cover the unticked remainder OF THIS LIST
     if bulk:
         remaining = conn.execute(
-            "SELECT * FROM items WHERE status = 'active' AND tombstone = 0"
+            "SELECT * FROM items WHERE status = 'active' AND tombstone = 0 AND list_id = ?",
+            (trip.list_id,),
         ).fetchall()
         for decision in bulk:
             for row in remaining:
@@ -124,20 +133,23 @@ def apply_trip(conn: sqlite3.Connection, trip: TripMutation, user: AuthUser) -> 
     for row in bought_staples:
         if not row["name_key"]:
             continue
-        # staple already-active → no duplicate (partial unique: active + tombstone=0)
+        # staple already-active → no duplicate (partial unique: active + tombstone=0),
+        # scoped to the SAME list as the completed item
         active = conn.execute(
-            "SELECT id FROM items WHERE name_key = ? AND status = 'active' AND tombstone = 0",
-            (row["name_key"],),
+            "SELECT id FROM items WHERE name_key = ? AND list_id = ? AND status = 'active'"
+            " AND tombstone = 0",
+            (row["name_key"], row["list_id"]),
         ).fetchone()
         if active is not None:
             continue
         new_id = db.new_id()
         conn.execute(
-            "INSERT INTO items (id, name, name_key, quantity, note, status, staple, created_by, "
-            "created_at, updated_at, rev, tombstone) "
-            "VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, 0)",
+            "INSERT INTO items (id, list_id, name, name_key, quantity, note, status, staple, "
+            "created_by, created_at, updated_at, rev, tombstone) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, 0)",
             (
                 new_id,
+                row["list_id"],  # re-add lands on the same list (data-model v2)
                 row["name"],
                 row["name_key"],
                 row["quantity"],  # prefilled from history.staple_snapshot/quantity/note

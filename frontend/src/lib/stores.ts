@@ -3,8 +3,9 @@
 // interaction; the UI reads only from what is in IndexedDB.
 import { writable, derived, get } from 'svelte/store';
 import * as db from './db';
-import type { HistoryEntry, Item, OutboxItemMutation, TripDecision } from './db';
+import type { HistoryEntry, Item, List, OutboxItemMutation, TripDecision } from './db';
 import { nameKey, validateItem, uuid } from './validate';
+import { bumpQuantityText } from './quantity';
 import {
   requestBackgroundSync,
   runSync,
@@ -14,6 +15,7 @@ import {
   type SyncStatusValue,
 } from './sync';
 import type { Suggestion } from './rank';
+import { activeListId, setActiveList, reconcileActiveList } from './active-list';
 import {
   flushHistoryDeletes,
   getPendingDeletes,
@@ -25,13 +27,26 @@ import {
 
 export const itemsStore = writable<Item[]>([]);
 export const historyStore = writable<HistoryEntry[]>([]);
+/** T007 — every non-tombstoned list, fresh from IndexedDB. */
+export const listsStore = writable<List[]>([]);
 export const syncStatus = writable<SyncStatusValue>('idle');
 export const userStore = writable<{ sub: string; name: string } | null>(null); // T022
 
+// Re-exported so components only ever import from stores.
+export { activeListId, setActiveList };
+
+/** The active List object (or null on a fresh device pre-pull). */
+export const activeList = derived([listsStore, activeListId], ([lists, id]) =>
+  lists.find((l) => l.id === id && !l.tombstone) ?? null,
+);
+
 /** The single list: active, not tombstoned. Unticked queue first (newest on
- * top for thumb reach), ticked visually separate below. */
-export const activeItems = derived(itemsStore, (items) => {
-  const live = items.filter((i) => i.status === 'active' && !i.tombstone);
+ * top for thumb reach), ticked visually separate below. T007: scoped to the
+ * ACTIVE list only. */
+export const activeItems = derived([itemsStore, activeListId], ([items, listId]) => {
+  const live = items.filter(
+    (i) => i.status === 'active' && !i.tombstone && (i.list_id ?? db.DEFAULT_LIST_ID) === listId,
+  );
   const fresh = (a: Item, b: Item) =>
     (b.local_created_at || '').localeCompare(a.local_created_at || '');
   const unticked = live.filter((i) => !i.ticked).sort(fresh);
@@ -56,6 +71,8 @@ export const historyVisible = derived([historySorted, pendingDeletes], ([rows, p
 export async function loadStoresFromDb(): Promise<void> {
   itemsStore.set(await db.getAllItems());
   historyStore.set(await db.getAllHistory());
+  listsStore.set(await db.getAllLists());
+  await reconcileActiveList(); // FR-020 fallback resolution
 }
 
 /** Keep stores in step after each silent sync completes. */
@@ -68,6 +85,8 @@ export function wireStoresToSync(): void {
 export function resetStoresForTests(): void {
   itemsStore.set([]);
   historyStore.set([]);
+  listsStore.set([]);
+  activeListId.set(db.DEFAULT_LIST_ID);
   syncStatus.set('idle');
   userStore.set(null);
   pendingDeletes.set(new Set());
@@ -78,6 +97,7 @@ export function resetStoresForTests(): void {
 function itemToPush(item: Item): OutboxItemMutation {
   return {
     id: item.id,
+    list_id: item.list_id,
     name: item.name,
     quantity: item.quantity,
     note: item.note,
@@ -92,6 +112,10 @@ async function reloadItems(): Promise<void> {
 
 async function reloadHistory(): Promise<void> {
   historyStore.set(await db.getAllHistory());
+}
+
+async function reloadLists(): Promise<void> {
+  listsStore.set(await db.getAllLists());
 }
 
 // ---- US1: add / delete ----
@@ -121,6 +145,7 @@ export async function addItem(
     created_at: now, // placeholder; the server stamps on receipt
     updated_at: now,
     rev: 0,
+    list_id: get(activeListId) || db.DEFAULT_LIST_ID,
     ticked: false,
     ticked_at: null,
     local_created_at: now,
@@ -148,13 +173,128 @@ export async function deleteItem(id: string): Promise<void> {
   await db.putItem(tombstoned);
   await db.enqueueOutbox({
     op: 'upsert_item',
-    item: { id: tombstoned.id, tombstone: true },
+    item: { id: tombstoned.id, list_id: tombstoned.list_id, tombstone: true },
     fields: ['tombstone'],
     ts: new Date().toISOString(),
   });
   await reloadItems();
   void requestBackgroundSync();
   schedulePostMutationSync();
+}
+
+// ---- US-lists: create / delete lists (FR-015/018/019, T007) ----
+
+/** validateList mirrors data-model.md: trimmed, 1–100 chars, NOT unique. */
+function validateListName(raw: string): { name: string; err: string | null } {
+  const name = raw.trim();
+  if (!name) return { name, err: 'Name is required' };
+  if (name.length > 100) return { name, err: 'Name must be at most 100 characters' };
+  return { name, err: null };
+}
+
+/** '+ New list' (T009): persists locally FIRST, then queues create_list. */
+export async function createList(
+  input: string,
+  opts: { createdBy?: string } = {},
+): Promise<List> {
+  const { name, err } = validateListName(input);
+  if (err) throw new Error(err);
+
+  const now = new Date().toISOString();
+  const list: List = {
+    id: uuid(),
+    name,
+    created_by: opts.createdBy || 'local',
+    created_at: now,
+    tombstone: false,
+    rev: 0,
+  };
+
+  // 1. persist BEFORE network (constitution I), 2. queue the mutation,
+  // 3. open the new list (US2-1: "the list exists, is opened").
+  await db.putList(list);
+  await db.enqueueOutbox({
+    op: 'create_list',
+    list: { id: list.id, name: list.name },
+    ts: now,
+  });
+  await reloadLists();
+  await setActiveList(list.id);
+  void requestBackgroundSync();
+  schedulePostMutationSync();
+  return list;
+}
+
+interface RemovedListSnapshot {
+  list: List;
+  items: Item[];
+}
+
+const listUndoTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const removedLists = new Map<string, RemovedListSnapshot>();
+const LIST_UNDO_MS = 5000;
+
+/** Per-list delete (single tap + 5 s undo). Tombstones the list AND all of
+ * its items locally right away (FR-018); the delete_list outbox mutation is
+ * only queued once the undo window expires. Refuses to delete the LAST live
+ * list (FR-019). */
+export async function deleteList(id: string): Promise<void> {
+  const list = await db.getList(id);
+  if (!list || list.tombstone) return; // already deleted — no-op
+  const liveLists = (await db.getAllLists()).filter((l) => !l.tombstone);
+  if (liveLists.length <= 1) throw new Error('cannot delete the last list');
+
+  // cascade: tombstone the list + every live item of that list
+  const items = (await db.getAllItems()).filter(
+    (i) => i.list_id === id && !i.tombstone,
+  );
+  const now = new Date().toISOString();
+  await db.putList({ ...list, tombstone: true });
+  for (const item of items) {
+    await db.putItem({ ...item, tombstone: true, updated_at: now });
+  }
+
+  removedLists.set(id, { list, items });
+  await reloadLists();
+  await reloadItems();
+  // fall back off the deleted list if it was active (FR-020)
+  if (get(activeListId) === id) await reconcileActiveList();
+
+  const timer = setTimeout(() => {
+    listUndoTimers.delete(id);
+    void commitListDelete(id);
+  }, LIST_UNDO_MS);
+  listUndoTimers.set(id, timer);
+}
+
+async function commitListDelete(id: string): Promise<void> {
+  const snapshot = removedLists.get(id);
+  if (!snapshot) return;
+  removedLists.delete(id);
+  // queue the mutation — it rides the outbox like any other (FR-022)
+  await db.enqueueOutbox({ op: 'delete_list', list_id: id, ts: new Date().toISOString() });
+  void requestBackgroundSync();
+  schedulePostMutationSync();
+}
+
+/** Undo within the 5 s window: restore the list and its items, cancel the delete. */
+export async function undoDeleteList(id: string): Promise<void> {
+  const timer = listUndoTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    listUndoTimers.delete(id);
+  }
+  const snapshot = removedLists.get(id);
+  removedLists.delete(id);
+  if (!snapshot) return;
+  await db.putList({ ...snapshot.list, tombstone: false });
+  for (const item of snapshot.items) {
+    await db.putItem({ ...item, tombstone: false });
+  }
+  await Promise.all([reloadLists(), reloadItems()]);
+  // no reconcile: the undone list is live again; keep whatever selection the
+  // delete fell back to unless it no longer exists
+  await reconcileActiveList();
 }
 
 // ---- US2: check-off + trip ----
@@ -189,7 +329,11 @@ export async function completeTrip(decisions: TripDecision[]): Promise<string> {
 
   const now = new Date().toISOString();
   const tripId = uuid();
-  await db.enqueueOutbox({ op: 'trip', trip: { id: tripId, decisions }, ts: now });
+  // FR-017: the trip is scoped to the list of its own items (decisions never
+  // cross lists — the server rejects and rolls back otherwise).
+  const firstItem = await db.getItem(decisions[0].item_id);
+  const listId = firstItem?.list_id || get(activeListId) || db.DEFAULT_LIST_ID;
+  await db.enqueueOutbox({ op: 'trip', trip: { id: tripId, list_id: listId, decisions }, ts: now });
   await reloadItems();
   void requestBackgroundSync();
   schedulePostMutationSync();
@@ -227,7 +371,7 @@ export async function saveItemEdit(
   };
   await db.putItem(updated);
 
-  const payload: OutboxItemMutation = { id: updated.id };
+  const payload: OutboxItemMutation = { id: updated.id, list_id: updated.list_id };
   if (changed.includes('name')) payload.name = name;
   if (changed.includes('quantity')) payload.quantity = quantity;
   if (changed.includes('note')) payload.note = note;
@@ -331,6 +475,21 @@ export async function flushUndoTimersForTests(): Promise<void> {
   undoTimers.clear();
   pendingDeletes.set(new Set());
   lastRemoved.clear();
+  // list undo windows: queue their delete_list mutations now
+  for (const id of [...listUndoTimers.keys()]) {
+    clearTimeout(listUndoTimers.get(id));
+    listUndoTimers.delete(id);
+    if (removedLists.has(id)) removedLists.delete(id);
+    await db.enqueueOutbox({ op: 'delete_list', list_id: id, ts: new Date().toISOString() });
+  }
+  // only for lists that still exist as tombstoned (deletes that were flushed
+  // above); an undone list must NOT be deleted
+  const tombstoned = new Set((await db.getAllLists()).filter((l) => l.tombstone).map((l) => l.id));
+  const outbox = await db.getOutbox();
+  const stale = outbox
+    .filter((e) => e.op === 'delete_list' && !tombstoned.has(e.list_id))
+    .map((e) => e.seq);
+  await db.deleteOutboxSeqs(stale);
   try {
     await flushHistoryDeletes();
   } catch {

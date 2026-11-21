@@ -44,6 +44,7 @@ def test_events_streams_handshake_and_changed(client, auth):
                     "item": {
                         "id": "a5f0d9d1-3f9a-4e39-8f61-2e5a8e3c9b77",
                         "name": "koffie",
+                        "list_id": "00000000-0000-4000-8000-000000000001",
                     },
                 }
             ]
