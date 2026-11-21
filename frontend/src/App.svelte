@@ -223,7 +223,12 @@
         aria-label="Lists"
         aria-haspopup="true"
         aria-expanded={menuOpen}
-        onclick={() => (menuOpen = true)}
+        onclick={(e) => {
+          // blur immediately so the browser's focus highlight does not linger
+          // while the drawer slides over the header
+          (e.currentTarget as HTMLButtonElement).blur();
+          menuOpen = true;
+        }}
       >
         <svg
           viewBox="0 0 24 24"
